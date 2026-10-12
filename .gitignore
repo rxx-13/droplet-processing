@@ -1,0 +1,10 @@
+# все служебные папки: .venv (окружение Python), .vscode, .claude и т. п.
+.*/
+# кроме памятки для Claude Code (уберите эти две строки, если она в git не нужна)
+!.claude/
+.claude/*
+!.claude/CLAUDE.md
+
+# кэши Python
+__pycache__/
+.pytest_cache/
