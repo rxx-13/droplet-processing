@@ -28,9 +28,45 @@ Word-версии этих документов — в папке `docx/`. По�
 
 ## Установка (один раз)
 
-1. Установить [uv](https://docs.astral.sh/uv/) — менеджер Python и библиотек.
+### Способ 1 (рекомендуется): uv
+
+1. Установить [uv](https://docs.astral.sh/uv/) — менеджер Python и библиотек. Например, в PowerShell:
+   `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`.
 2. В папке проекта выполнить `uv sync`. Появится папка `.venv` с Python 3.12 и нужными
    библиотеками (их список — в `pyproject.toml`), и файл `uv.lock` с их точными версиями.
+
+Команды запуска ниже — для этого способа: `.venv\Scripts\python.exe …`.
+
+### Способ 2: обычный Python и pip (например, чтобы запускать из IDLE)
+
+1. Установить Python 3.12 или новее с [python.org](https://www.python.org/downloads/).
+2. Поставить библиотеки одной командой (в командной строке Windows):
+   ```
+   py -m pip install numpy==2.5.3 scipy==1.18.1 scikit-image==0.26.0 pillow==12.3.0 openpyxl==3.1.5 matplotlib==3.11.2
+   ```
+   С этими версиями проверено совпадение с MATLAB. С другими версиями всё работает, но в редких
+   пограничных случаях могут отличаться последние знаки.
+
+   | Библиотека | Для чего |
+   |---|---|
+   | numpy | массивы и вычисления |
+   | scipy | морфология, БПФ, интерполяция, чтение и запись .mat |
+   | scikit-image | обработка изображений (заливка, нумерация объектов) |
+   | pillow | чтение кадров (jpg, png, tif, bmp) |
+   | openpyxl | чтение таблицы записей xlsx |
+   | matplotlib | картинки и окно просмотра |
+
+   По желанию: `py -m pip install pytest` — для тестов, `py -m pip install pypandoc-binary` — для
+   пересборки Word-версий документации.
+3. Запуск — вместо `.venv\Scripts\python.exe` везде ниже писать `py`:
+   - из **IDLE**: File → Open → `main\st1_droplets_separation.py` → Run → Run Module (F5); так же
+     `main\st2_ptv.py`, `main\st4_droplets_in_area.py`, `tools\st1_viewer.py`. Из какой папки запущен
+     IDLE, неважно: скрипты сами находят папки `lib` и `experiments`;
+   - из **командной строки** в папке проекта: `py main\st1_droplets_separation.py` и т. д.;
+     тесты — `py -B -m pytest`, Word-версии документации — `py tools\make_docx.py`.
+
+   Запуск из IDLE пока не проверялся. Окно просмотра (`tools\st1_viewer.py`) считает кадры в нескольких
+   процессах — если из IDLE оно поведёт себя странно, запустите его из командной строки.
 
 ## Как запустить
 
