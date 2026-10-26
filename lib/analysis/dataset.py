@@ -1,8 +1,9 @@
 """Обработка результатов: данные из итоговых файлов st4 многих экспериментов — одна таблица для распределений.
 
 Источник (Source) — результаты одного эксперимента: таблица записей TABLE_FILE и папка результатов —
-OUTPUT_DIR (результаты Python) или MATLAB_RESULTS_DIR (результаты MATLAB, тот же формат). Эксперименты
-находятся сами: папки experiments/<имя> с settings.py (find_sources). Для каждой записи таблицы читается
+OUTPUT_DIR (результаты Python) или, если попросить (matlab=True), MATLAB_RESULTS_DIR (результаты MATLAB, тот же
+формат; приложение их пока не показывает). Эксперименты находятся сами: папки experiments/<имя> с settings.py
+(find_sources). Для каждой записи таблицы читается
 папка <папка результатов>/st4/<путь записи>_output_st4/ (как пишет st4) — на выбор уровень (LEVELS):
     tracks  <область>.mat: строка на траекторию в области — x, y, мм; vx, vy, |v|, м/с; r, мкм
             (p_in_area_scale) и высота и нижний край области, мм (area_hight_scale_mm, area_low_edge_hight_scale_mm);
@@ -51,25 +52,28 @@ class Source:
 
     @property
     def label(self) -> str:
-        """Подпись для списка: «эксперимент — результаты Python»."""
-        return f"{self.experiment} — результаты {self.origin}"
+        """Подпись для списка: имя эксперимента (у результатов MATLAB — «эксперимент — результаты MATLAB»)."""
+        return self.experiment if self.origin == "Python" else f"{self.experiment} — результаты {self.origin}"
 
 
-def sources_of(experiment: str, settings: Any) -> list[Source]:
-    """Источники эксперимента по его settings: результаты Python (OUTPUT_DIR) и, если задан, MATLAB."""
+def sources_of(experiment: str, settings: Any, matlab: bool = False) -> list[Source]:
+    """Источники эксперимента по его settings: результаты Python (OUTPUT_DIR); matlab — ещё и результаты
+    MATLAB (MATLAB_RESULTS_DIR), если он задан."""
     found = [Source(experiment, "Python", Path(settings.TABLE_FILE), Path(settings.OUTPUT_DIR))]
-    matlab = getattr(settings, "MATLAB_RESULTS_DIR", None)
-    if matlab:
-        found.append(Source(experiment, "MATLAB", Path(settings.TABLE_FILE), Path(matlab)))
+    matlab_dir = getattr(settings, "MATLAB_RESULTS_DIR", None)
+    if matlab and matlab_dir:
+        found.append(Source(experiment, "MATLAB", Path(settings.TABLE_FILE), Path(matlab_dir)))
     return found
 
 
-def find_sources(experiments_dir: Path) -> tuple[list[Source], list[str]]:
-    """Источники всех экспериментов папки experiments_dir (папки с settings.py); второе — что не прочиталось."""
+def find_sources(experiments_dir: Path, matlab: bool = False) -> tuple[list[Source], list[str]]:
+    """Источники всех экспериментов папки experiments_dir (папки с settings.py; matlab — с результатами MATLAB);
+    второе — что не прочиталось."""
     found, problems = [], []
     for folder in sorted(p for p in Path(experiments_dir).iterdir() if (p / "settings.py").is_file()):
         try:
-            found += sources_of(folder.name, load_module(folder / "settings.py", f"analysis_settings_{folder.name}"))
+            settings = load_module(folder / "settings.py", f"analysis_settings_{folder.name}")
+            found += sources_of(folder.name, settings, matlab)
         except Exception as error:  # ошибка в settings.py одного эксперимента не мешает остальным
             problems.append(f"{folder.name}: settings.py не прочитан: {error}")
     return found, problems

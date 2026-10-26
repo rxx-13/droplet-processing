@@ -6,6 +6,9 @@
 одновременно (по процессу на запись). «Запустить» — обработка в фоне, окно не подвисает; «Остановить» —
 остановить всё сразу (прерванная стадия может оставить неполные файлы — её стоит запустить заново).
 Ошибка в одной записи останавливает только её цепочку. Внизу — общий лог (то, что скрипты пишут в консоль).
+Флажки — как выделение в проводнике (CheckPainter, он же — в списке экспериментов «Обработки результатов»):
+щелчок по строке ставит или снимает флажок, протянуть с зажатой левой кнопкой — так же меняются все строки
+по пути, Shift+щелчок — все строки от прошлого щелчка; кнопки «Отметить все / готовые», «Снять отметки».
 
 Считается то же и так же, что скриптами main/ (те же функции process_record, lib/common/jobs.py), с
 настройками и таблицей из файлов: если есть несохранённые правки, окно предложит сохранить их перед запуском.
@@ -15,9 +18,9 @@
 import os
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QMessageBox,
                                QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -27,6 +30,58 @@ from lib.common.jobs import STAGES, Job, JobRunner
 POLL_MS = 200  # как часто забирать сообщения процессов
 LOG_LINES = 20000  # столько последних строк держит общий лог
 COLUMNS = ["Запись", "Готова", *RESULT_FILES, "Ход"]
+
+
+class CheckPainter(QObject):
+    """Флажки в списке или таблице — как выделение в проводнике: щелчок по строке (не только по квадратику)
+    ставит или снимает флажок; если провести с зажатой левой кнопкой — так же меняются все строки по пути;
+    Shift+щелчок — все строки от прошлого щелчка до этого. view — QListWidget или QTableWidget (флажок —
+    в первой колонке); changed — что вызвать после изменения (None — ничего)."""
+
+    def __init__(self, view: QAbstractItemView, changed: Callable[[], None] | None = None) -> None:
+        super().__init__(view)
+        self.view, self.changed = view, changed
+        self.state: Qt.CheckState | None = None  # что ставится, пока кнопка зажата
+        self.last: int | None = None  # строка прошлого щелчка
+        view.viewport().installEventFilter(self)
+
+    def _item(self, row: int):
+        """Элемент с флажком строки row."""
+        return self.view.item(row) if isinstance(self.view, QListWidget) else self.view.item(row, 0)
+
+    def _set(self, rows: range | list[int]) -> None:
+        """Поставить флажкам строк rows состояние self.state."""
+        for row in rows:
+            item = self._item(row)
+            if item is not None and item.checkState() != self.state:
+                item.setCheckState(self.state)
+        if self.changed is not None:
+            self.changed()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Мышь над списком: нажатие, протягивание, отпускание (двойной щелчок — не правка ячейки)."""
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonDblClick:
+            return True
+        if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            row = self.view.indexAt(event.position().toPoint()).row()
+            if row < 0 or self._item(row) is None:
+                return False
+            checked = self._item(row).checkState() == Qt.CheckState.Checked
+            self.state = Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked
+            shift = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            self._set(range(min(self.last, row), max(self.last, row) + 1) if shift and self.last is not None
+                      else [row])
+            self.last = row
+            return True
+        if kind == QEvent.Type.MouseMove and self.state is not None:
+            row = self.view.indexAt(event.position().toPoint()).row()
+            if row >= 0:
+                self._set([row])
+            return True
+        if kind == QEvent.Type.MouseButtonRelease:
+            self.state = None
+        return False
 
 
 class JobsPage(QWidget):
@@ -78,16 +133,20 @@ class JobsPage(QWidget):
         self.list.verticalHeader().setVisible(False)
         self.list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.painter = CheckPainter(self.list)
         header = self.list.horizontalHeader()
         for column in range(len(COLUMNS) - 1):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(len(COLUMNS) - 1, QHeaderView.ResizeMode.Stretch)
+        mark_all = QPushButton("Отметить все")
+        mark_all.clicked.connect(lambda: self._mark(lambda i: True))
         mark_ready = QPushButton("Отметить готовые")
         mark_ready.setToolTip("отметить записи, у которых заданы диапазон кадров, rim и центр")
         mark_ready.clicked.connect(lambda: self._mark(lambda i: self._readiness(i) == "✓"))
         mark_none = QPushButton("Снять отметки")
         mark_none.clicked.connect(lambda: self._mark(lambda i: False))
         marks = QHBoxLayout()
+        marks.addWidget(mark_all)
         marks.addWidget(mark_ready)
         marks.addWidget(mark_none)
         marks.addStretch(1)

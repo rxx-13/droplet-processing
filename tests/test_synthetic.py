@@ -445,7 +445,7 @@ def test_results_processing_loads_st4_selects_plots_and_exports(run, tmp_path):
     experiment.mkdir(parents=True)
     _module_file(experiment / "settings.py", vars(run.settings))
     page = AnalysisPage(tmp_path / "experiments")
-    page.set_checked(["synth — результаты Python"])
+    page.set_checked(["synth"])
     page.load_data()
     assert len(page.data) == len(tracks) and "Загружено строк" in page.data_info.text()
     page.kind.setCurrentIndex(page.kind.findData("binned"))  # |v| по окнам r
@@ -485,3 +485,42 @@ def test_results_processing_loads_st4_selects_plots_and_exports(run, tmp_path):
     again.set_state(json.loads(json.dumps(page.state())))
     assert len(again.selection) == len(page.selection) and len(again.series) == len(page.series)
     assert np.allclose(again.fits[0][1].values["a"], result.values["a"])
+
+
+def test_check_painter_toggles_by_row_click_drag_and_shift():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QListWidget, QListWidgetItem
+
+    from app.jobs_page import CheckPainter
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    view = QListWidget()
+    for k in range(6):
+        item = QListWidgetItem(f"запись {k}")
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Unchecked)
+        view.addItem(item)
+    view.resize(300, 300)
+    view.show()
+    CheckPainter(view)
+    left, none, shift = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier
+
+    def at(row: int):
+        return view.visualItemRect(view.item(row)).center()  # середина строки — по тексту, не по квадратику
+
+    def checked() -> list[bool]:
+        return [view.item(k).checkState() == Qt.CheckState.Checked for k in range(6)]
+
+    QTest.mouseClick(view.viewport(), left, none, at(0))  # щелчок по тексту строки
+    assert checked() == [True, False, False, False, False, False]
+    QTest.mousePress(view.viewport(), left, none, at(1))  # протянуть с зажатой кнопкой по строкам 1–3
+    QTest.mouseMove(view.viewport(), at(2))
+    QTest.mouseMove(view.viewport(), at(3))
+    QTest.mouseRelease(view.viewport(), left, none, at(3))
+    assert checked() == [True, True, True, True, False, False]
+    QTest.mouseClick(view.viewport(), left, shift, at(5))  # Shift — все строки от прошлого щелчка (1) до 5
+    assert checked() == [True] * 6
+    QTest.mouseClick(view.viewport(), left, none, at(0))  # повторный щелчок снимает
+    assert checked()[0] is False

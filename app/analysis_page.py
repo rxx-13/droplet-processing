@@ -1,8 +1,8 @@
 """Часть «Обработка результатов»: распределения и зависимости по итоговым файлам st4 многих экспериментов.
 
 Не привязана к текущему эксперименту. Слева — разделы (щелчок по заголовку сворачивает и разворачивает):
-    Данные           эксперименты из папки experiments/ (результаты Python и, если задан MATLAB_RESULTS_DIR,
-                     MATLAB) — отметить галочками; уровень: «траектории в областях» (строка на траекторию
+    Данные           эксперименты из папки experiments/ (их результаты Python; MATLAB пока не показывается) —
+                     отметить галочками (щелчок по строке, можно протянуть мышью); уровень: «траектории в областях» (строка на траекторию
                      в области st4: x, y, мм; vx, vy, |v|, м/с; r, мкм; высота и нижний край области, мм) или
                      «средние по областям» (_all_stat.dat); к строкам добавляются параметры записи из таблицы
                      записей (F, cond_num, bag_hight, …). «Загрузить» — прочитать.
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QTableWidget,
                                QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
+from app.jobs_page import CheckPainter
 from lib.analysis.dataset import LEVELS, DataTable, Source, find_sources, load
 from lib.analysis.formulas import FitResult, computed_columns, evaluate, fit, parameters_of
 from lib.analysis.labplot import write_csv, write_lml
@@ -315,6 +316,7 @@ class AnalysisPage(QWidget):
         """Раздел «Данные»: источники, уровень, «Загрузить»."""
         section = Section("Данные")
         self.source_list = QListWidget()
+        self.source_painter = CheckPainter(self.source_list)  # щелчок по строке, протягивание, Shift
         self.source_list.setMaximumHeight(120)
         self.level = QComboBox()
         for key, text in LEVELS.items():
