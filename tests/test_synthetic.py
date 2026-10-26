@@ -3,20 +3,25 @@ r"""Проверка физики на искусственной съёмке: 
 Рисуются кадры (светлый фон, тёмные круглые капли), таблица записей и настройки — во временной
 папке. Затем по очереди выполняются st1, st2 и st4 (функции process_record из main/) и проверяется,
 что найдены все капли, их радиусы и скорость, а средние в области st4 в мм, м/с и мкм совпадают
-с заданными. Отдельно — что окно просмотра st1 (tools/st1_viewer.py) показывает все виды.
+с заданными. Отдельно — что окно просмотра st1 (tools/st1_viewer.py) показывает все виды и что
+приложение (app/) открывает записи, показывает все виды, заполняет и сохраняет таблицу и настройки,
+запускает стадии в фоновых процессах (с тем же результатом, что скрипты main/) и показывает результаты.
 От конкретного эксперимента и от MATLAB проверка не зависит.
 
 Запуск:  .venv\Scripts\python.exe -B -m pytest tests\test_synthetic.py
 """
 
 import importlib.util
+import os
+import shutil
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import matplotlib
 import numpy as np
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from PIL import Image
 
 from lib.common import files
@@ -206,3 +211,168 @@ def test_st1_viewer_computes_frames_exactly_like_st1(run):
         np.testing.assert_array_equal(result.radii, radii[k - 1])
         np.testing.assert_array_equal(result.xd, xd[k - 1])
         np.testing.assert_array_equal(result.yd, yd[k - 1])
+
+
+def test_app_opens_records_shows_every_view_and_saves_the_table(run, tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.records_page import VIEW_KEYS
+    from app.window import MainWindow
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    # копия таблицы с ещё одной, незаполненной записью rec2 (её кадры — копия кадров rec1)
+    table = tmp_path / "table.xlsx"
+    workbook = load_workbook(run.settings.TABLE_FILE)
+    workbook.active.append([1, "rec2", "rec2"])
+    workbook.save(table)
+    for name in ("rec1", "rec2"):
+        shutil.copytree(Path(run.settings.IMAGES_DIR) / "rec1", tmp_path / "images" / name)
+    settings = SimpleNamespace(**{**vars(run.settings), "TABLE_FILE": str(table),
+                                  "IMAGES_DIR": str(tmp_path / "images"), "OUTPUT_DIR": str(tmp_path / "out")})
+    window = MainWindow(settings, THRESHOLDS, workers=0)  # кадры считаются сразу, без фоновых процессов
+    page = window.records
+
+    assert page.list.rowCount() == 2 and page.list.item(0, 1).text() == "✓"
+    assert "кадр 2 из 15" in page.title.text()  # rec1 открыта на начале диапазона (файл 2)
+    for view in VIEW_KEYS.values():
+        page.set_view(view)
+        assert "шибка" not in page.info.text(), f"{view}: {page.info.text()}"
+    page.set_view("droplets")
+    assert "капель: Python 15" in page.info.text()
+    page.toggle_slideshow()
+    for _ in range(3):
+        page._slideshow_step()  # шаг таймера слайдшоу
+    page.toggle_slideshow()
+    assert page.number == 5
+
+    page.switch_record(1)  # rec2: нет диапазона, rim и центра
+    assert page.i == 1 and "кадр 1 из 15" in page.title.text() and "нужен rim" in page.info.text()
+    page.fields["rim"].hint.click()  # подсказка «← 5000» — rim предыдущей заполненной записи
+    page.recompute()  # то же делает таймер после правки rim
+    page.go(3)  # файл 1 — фон, капли — с файла 2
+    assert "капель: Python 15" in page.info.text()
+    page.start_button.click()
+    page.go(12)
+    page.fin_button.click()
+    page.center_button.click()
+    page.view.clicked.emit(100.4, 200.6)  # щелчок по кадру в режиме «центр затравки»
+    assert not page.center_button.isChecked() and window.windowTitle().endswith("*")
+
+    assert window.save() and not page.has_changes
+    rec1, rec2 = read_records(table)
+    assert (rec2.start_frame, rec2.fin_frame, rec2.rim, rec2.cx, rec2.cy) == (3, 12, 5000, 100, 201)
+    assert rec1 == read_records(Path(run.settings.TABLE_FILE))[0]  # rec1 не тронута
+    assert list((tmp_path / "out" / "table_backups").glob("table *.xlsx"))  # копия таблицы до записи
+    window.close()
+
+
+def _module_file(path: Path, values: dict) -> ModuleType:
+    """Файл настроек (ИМЯ = значение  # комментарий) и модуль из него — как settings.py, thresholds.py."""
+    path.write_text("".join(f"{name} = {value!r}  # {name.lower()}\n" for name, value in values.items()),
+                    encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_app_settings_panel_recomputes_frame_and_saves_files(run, tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.window import MainWindow
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    settings = _module_file(tmp_path / "settings.py", {**vars(run.settings), "OUTPUT_DIR": str(tmp_path / "out")})
+    thresholds = _module_file(tmp_path / "thresholds.py", vars(THRESHOLDS))
+    window = MainWindow(settings, thresholds, workers=0)
+    page, panel = window.records, window.records.params
+    page.go(3)
+    page.set_view("droplets")
+    assert "капель: Python 15" in page.info.text()
+
+    panel.set_text("thresholds", "RIM_GRAY_RANGE", "(-300, -200)")  # всё светлее границы — капель нет
+    page.apply_parameters()  # то же делает таймер после правки
+    assert "капель: Python 0" in page.info.text() and window.windowTitle().endswith("*")
+    field = panel.fields[("thresholds", "RIM_BINARIZE_THRESHOLD")]
+    field.sliders[0].setValue(800)  # ползунок 0…0.3 (вдвое больше значения 0.15)
+    assert panel.files["thresholds"].edits["RIM_BINARIZE_THRESHOLD"] == field.edit.text() == "0.24"
+    panel.set_text("thresholds", "RIM_CLOSE_RADIUS", "(1, 2)")  # не число — красным, правки нет
+    assert "ffc9c9" in panel.fields[("thresholds", "RIM_CLOSE_RADIUS")].edit.styleSheet()
+    assert "RIM_CLOSE_RADIUS" not in panel.files["thresholds"].edits
+    panel.set_text("thresholds", "RIM_BINARIZE_THRESHOLD", "0.15")  # как в файле — правка снимается
+    assert "RIM_BINARIZE_THRESHOLD" not in panel.files["thresholds"].edits
+
+    assert window.save() and not panel.has_changes and not window.windowTitle().endswith("*")
+    text = (tmp_path / "thresholds.py").read_text(encoding="utf-8")
+    assert "RIM_GRAY_RANGE = (-300, -200)  # rim_gray_range\n" in text and "RIM_BINARIZE_THRESHOLD = 0.15  #" in text
+    assert thresholds.RIM_GRAY_RANGE == (-300, -200)  # модуль в памяти — как файл
+
+    panel.set_text("thresholds", "RIM_GRAY_RANGE", "(-110, 0)")
+    panel.discard()  # «Вернуть как в файлах»
+    page.apply_parameters()
+    assert not panel.has_changes and "капель: Python 0" in page.info.text()
+    window.close()
+
+
+def test_app_runs_stages_like_main_scripts_and_shows_results(run, tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.window import MainWindow
+
+    application = QApplication.instance() or QApplication([])
+    settings = _module_file(tmp_path / "settings.py", {**vars(run.settings), "OUTPUT_DIR": str(tmp_path / "out")})
+    thresholds = _module_file(tmp_path / "thresholds.py", vars(THRESHOLDS))
+    window = MainWindow(settings, thresholds, workers=0)
+    jobs, results = window.jobs, window.results
+
+    def wait_for_jobs(seconds: float = 300) -> None:
+        start = time.monotonic()
+        while jobs.running and time.monotonic() - start < seconds:
+            application.processEvents()  # таймер вкладки забирает сообщения процессов
+            time.sleep(0.05)
+
+    window.tabs.setCurrentWidget(jobs)
+    jobs.set_checked([0])
+    jobs.start()  # st1 → st2 → st4 в отдельном процессе
+    wait_for_jobs()
+    assert jobs.list.item(0, 5).text() == "st4 ✓" and jobs.progress.text() == "готово 1 из 1"
+    assert "кадр 14 из 14" in jobs.log.toPlainText()  # ход работы st1 дошёл до окна
+
+    out = Path(settings.OUTPUT_DIR)  # результаты — те же, что у скриптов main/ (фикстура run)
+    for name in ("centers_arr", "radii_arr", "xd_q_arr"):
+        ours, theirs = (files.load_cell(folder / "particles.mat", name) for folder in (run.record.st1_dir(out), run.st1))
+        assert all(np.array_equal(a, b, equal_nan=True) for a, b in zip(ours, theirs))
+    assert (run.record.st4_dir(out) / "_all_stat.dat").read_bytes() == (run.st4 / "_all_stat.dat").read_bytes()
+    assert window.records.list.item(0, 4).text() == "✓"  # отметка «есть st4» на «Записях»
+
+    window.tabs.setCurrentWidget(results)
+    assert results.tracks_info.text().startswith("траекторий") and results.summary.rowCount() == 3
+    results.summary.selectRow(1)
+    assert results.area_table.rowCount() >= 5 and "траекторий" in results.area_info.text()
+
+    jobs.start()
+    jobs.stop()  # «Остановить» сразу после запуска
+    assert jobs.progress.text() == "готово 0 из 1, остановлено 1" and not jobs.running
+    window.close()
+
+
+def test_job_runner_reports_error_and_stops_the_chain(run, tmp_path):
+    from dataclasses import replace
+
+    from lib.common.jobs import Job, JobRunner
+
+    settings = _module_file(tmp_path / "settings.py", {**vars(run.settings), "OUTPUT_DIR": str(tmp_path / "out")})
+    _module_file(tmp_path / "thresholds.py", vars(THRESHOLDS))
+    missing = replace(run.record, path="нет такой записи")
+    runner = JobRunner(2)
+    runner.submit([Job(1, missing, ("st1", "st2"), settings.__file__, str(tmp_path / "thresholds.py"))])
+    messages, start = [], time.monotonic()
+    while (runner.busy() or not messages) and time.monotonic() - start < 120:
+        messages += runner.poll()
+        time.sleep(0.05)
+    kinds = [(kind, stage) for _, kind, stage, _ in messages if kind != "log"]
+    assert kinds == [("start", "st1"), ("error", "st1")]  # st2 после ошибки st1 не запускается
+    assert "Нет папки с кадрами" in messages[-1][3]

@@ -4,12 +4,18 @@ r"""Проверки отдельных функций на маленьких �
 """
 
 import math
+from pathlib import Path
 
 import numpy as np
-from openpyxl import Workbook
+import pytest
+from openpyxl import Workbook, load_workbook
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import PatternFill
 
+from lib.common.config_edit import SettingsFile, current_experiment, set_current_experiment, value_text
 from lib.common.files import last_number_in_name, save_dat
 from lib.common.records import read_records
+from lib.common.table_edit import EditableTable, TableSaveError
 from lib.st1 import image_ops as ops
 from lib.st1.piv import PivGrid, PivResult, filter_piv, median_ignoring_nan
 from lib.st2.tracking import PolyFit
@@ -69,6 +75,123 @@ def test_records_selection_by_condition_and_name(tmp_path):
     assert [r.name for r in read_records(t, conditions=[2])] == ["b", "c"]
     assert [r.name for r in read_records(t, names=["a", "c"])] == ["a", "c"]
     assert [r.name for r in read_records(t, conditions=[2], names=["a", "c"])] == ["c"]
+
+
+TABLE_HEADERS = ["cond_num", "rec_name", "images_path_side", "start_frame", "fin_frame", "rim", "c_x", "c_y"]
+
+
+def test_table_edit_writes_only_changed_cells_and_keeps_formatting(tmp_path):
+    path = _table(tmp_path / "t.xlsx", TABLE_HEADERS + ["comment"],
+                  [[1, "0201", r"w`", 80, 162, 200, 28, 883, "хорошая"], [1, "0205", r"w`"]])
+    workbook = load_workbook(path)  # форматирование, как в настоящей таблице
+    sheet = workbook.active
+    sheet.conditional_formatting.add("A1:B2", ColorScaleRule(start_type="min", start_color="FF0000",
+                                                             end_type="max", end_color="00FF00"))
+    sheet["F3"].fill = PatternFill("solid", fgColor="FFFF00")
+    sheet.column_dimensions["B"].width = 33
+    workbook.save(path)
+
+    table = EditableTable(path)
+    assert table.column("rim") == "rim" and table.column("cx") == "c_x"
+    table.set(1, "start_frame", table.parse("start_frame", "41"))
+    table.set(1, "rim", table.parse("rim", "200,5"))  # запятая — тоже десятичный знак
+    table.set(0, "rim", 200.0)  # то же, что в файле, — не правка
+    assert table.changes == {(1, "start_frame"): 41, (1, "rim"): 200.5}
+    assert table.parse("rec_name", "0207") == "0207"  # текстовая колонка: ведущий ноль не теряется
+    with pytest.raises(ValueError):
+        table.parse("fin_frame", "abc")  # в числовой колонке — только число
+
+    backup = table.save(tmp_path / "backups")
+    assert backup.exists() and not table.changes
+    sheet = load_workbook(path).active
+    assert (sheet["D4"].value, sheet["F4"].value, sheet["F3"].value, sheet["I3"].value) == (41, 200.5, 200, "хорошая")
+    assert sheet["F3"].fill.fgColor.rgb.endswith("FFFF00") and sheet.column_dimensions["B"].width == 33
+    assert len(list(sheet.conditional_formatting)) == 1
+    assert load_workbook(backup).active["D4"].value is None  # копия — таблица до записи
+
+
+def test_table_edit_records_and_autofill_from_filled_records(tmp_path):
+    path = _table(tmp_path / "t.xlsx", TABLE_HEADERS,
+                  [[1, "0201", r"w`", 80, 162, 200, 28, 883], [1, "0202", r"w`", 41, 101, 200, 28, 883],
+                   [1, "0203", r"w`", 32, 86, 300, 28, 883], [1, "0204", r"w`"]])
+    table = EditableTable(path)
+    assert [table.record(i) for i in range(len(table))] == read_records(path)  # те же правила, что у st1–st4
+    assert table.suggestion(3, "rim") == (2, 300)  # подсказка — предыдущая заполненная запись
+    assert table.suggestion(0, "rim") is None  # поле не пустое
+    # «как у предыдущих» — только колонки, одинаковые во всех заполненных записях (rim у них разный)
+    assert table.fill_like_previous(3) == ["c_x", "c_y"]
+    assert (table.record(3).cx, table.record(3).cy, table.record(3).rim) == (28, 883, None)
+
+
+def test_table_edit_does_not_overwrite_rows_changed_in_excel_or_open_file(tmp_path, monkeypatch):
+    path = _table(tmp_path / "t.xlsx", TABLE_HEADERS, [[1, "0201", "w"], [1, "0202", "w"]])
+    table = EditableTable(path)
+    table.set(1, "rim", 100)
+    workbook = load_workbook(path)
+    workbook.active["B4"] = "другая"  # тем временем строку переписали в Excel
+    workbook.save(path)
+    with pytest.raises(TableSaveError, match="правили"):
+        table.save()
+
+    table = EditableTable(path)
+    table.set(1, "rim", 100)
+
+    def locked(self, data):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "write_bytes", locked)  # так ведёт себя файл, открытый в Excel
+    with pytest.raises(TableSaveError, match="открыта в Excel"):
+        table.save()
+    assert table.changes  # правки не потеряны
+
+
+# ------------------------------------------------------------------ файлы настроек для приложения
+
+SETTINGS_TEXT = (
+    "# Пороги.\r\n\r\n"
+    "# ---------- st1: удаление рима\r\n"
+    "RIM_GRAY_RANGE = (-100, 0)  # «кадр минус фон»\r\n"
+    "CANNY_THRESHOLD = 0.1  # порог canny\r\n"
+    "# Пояснение над строкой\r\n"
+    "ERASE_REGIONS = []\r\n"
+    "IMAGES_DIR = r\"D:\\ИПФ РАН\\кадры\"  # корень\r\n"
+)
+
+
+def test_settings_file_writes_only_changed_values_and_keeps_comments(tmp_path):
+    path = tmp_path / "thresholds.py"
+    path.write_bytes(SETTINGS_TEXT.encode("utf-8"))  # концы строк CRLF должны сохраниться
+    f = SettingsFile(path)
+    rim = f.settings["RIM_GRAY_RANGE"]
+    assert (rim.value, rim.comment, rim.section) == ((-100, 0), "«кадр минус фон»", "st1: удаление рима")
+    assert f.settings["ERASE_REGIONS"].note == "Пояснение над строкой"
+    assert f.settings["IMAGES_DIR"].value == "D:\\ИПФ РАН\\кадры"
+
+    f.set_text("CANNY_THRESHOLD", "0.0000001")  # пишется как набрано, не 1e-07
+    f.set_text("ERASE_REGIONS", "[(381, None, 1, 302)]")
+    f.set_text("IMAGES_DIR", value_text("D:\\ИПФ РАН\\другие кадры"))
+    f.set_text("RIM_GRAY_RANGE", "(-100, 0)")  # как в файле — не правка
+    with pytest.raises(ValueError, match="нужно число"):
+        f.set_text("CANNY_THRESHOLD", "(1, 2)")
+    with pytest.raises(ValueError):
+        f.set_text("CANNY_THRESHOLD", "abc")
+    assert set(f.edits) == {"CANNY_THRESHOLD", "ERASE_REGIONS", "IMAGES_DIR"}
+
+    assert sorted(f.save()) == ["CANNY_THRESHOLD", "ERASE_REGIONS", "IMAGES_DIR"]
+    expected = (SETTINGS_TEXT.replace("0.1  #", "0.0000001  #").replace("= []", "= [(381, None, 1, 302)]")
+                .replace("кадры\"", "другие кадры\""))
+    assert path.read_bytes() == expected.encode("utf-8")  # всё остальное — байт в байт
+    assert f.value("CANNY_THRESHOLD") == 1e-7 and not f.edits
+
+
+def test_current_experiment_is_switched_in_current_py(tmp_path):
+    path = tmp_path / "current.py"
+    path.write_text("# Какой эксперимент.\n#   from experiments.x import settings_2 as settings, thresholds\n"
+                    "from experiments.clear_water_3 import settings, thresholds\n", encoding="utf-8")
+    assert current_experiment(path) == "clear_water_3"
+    set_current_experiment(path, "v4_zot_new")
+    assert current_experiment(path) == "v4_zot_new"
+    assert path.read_text(encoding="utf-8").startswith("# Какой эксперимент.\n#   from experiments.x")
 
 
 # ------------------------------------------------------------------ st1

@@ -16,6 +16,7 @@
 `process_record` этого скрипта → тот вызывает функции из [lib/](lib/). Настройки приходят двумя
 модулями: `settings` и `thresholds` текущего эксперимента (выбирается в
 [experiments/current.py](experiments/current.py)); их значения — атрибуты ЗАГЛАВНЫМИ буквами.
+Приложение ([app/](app/)) — окно над теми же функциями `lib/`: просмотр кадров и заполнение таблицы записей.
 
 **Соглашения.**
 - В файлах результатов номера кадров и капель и координаты — с 1, как в MATLAB. В массивах numpy
@@ -116,6 +117,32 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 «Что показывать» (`preview.py`) отделено от «как показывать» (`st1_viewer.py`): другой способ просмотра
 (серия PNG, видео, картинки во время st1) — новая короткая оболочка над `RecordPreview` и `ViewDrawer`.
 
+### Приложение — [app/](app/)
+
+```
+run.py → MainWindow (window.py)                  выбор эксперимента, «Сделать текущим», вкладки, Ctrl+S, F5
+│     current_experiment, set_current_experiment (lib/common/config_edit.py) — experiments/current.py
+├─ RecordsPage (records_page.py)                 вкладка «Записи»
+│   ├─ EditableTable (lib/common/table_edit.py)  таблица: все колонки, правки в памяти, автозаполнение
+│   │     read_table; record (как read_records); suggestion, fill_like_previous;
+│   │     save → save_cells (только изменённые ячейки; копия таблицы — в <OUTPUT_DIR>/table_backups)
+│   ├─ Frames                                    все кадры записи (не только диапазон)
+│   ├─ FrameComputer (frame_view.py)             расчёт кадров в процессах: текущий — в своём, впрок — в остальных
+│   │     compute_frame (lib/st1/preview.py)     st1 для одного кадра — тот же, что у окна просмотра
+│   ├─ FrameView (frame_view.py)                 показ видов 1–5 (pyqtgraph), щелчок по кадру (центр затравки)
+│   ├─ FrameScale (frame_view.py)                шкала кадров с подсветкой диапазона
+│   └─ ParamsPanel (params_page.py)              панель «Настройки» справа: значения settings.py, thresholds.py
+│         SettingsFile (lib/common/config_edit.py) × 2: правки в памяти; working → расчёт кадра
+│         (apply_parameters); save — только изменённые значения, комментарии остаются
+├─ JobsPage (jobs_page.py)                       вкладка «Запуск»: отмеченные записи, стадии st1 → st2 → st4
+│     JobRunner (lib/common/jobs.py)             по процессу на запись; в процессе run_job → process_record из main/
+│     сообщения процессов (ход работы, итог)     → колонка «Ход», общий лог, счётчики
+└─ ResultsPage (results_page.py)                 вкладка «Результаты»
+      draw_tracks ← ptv_unfiltered.mat; _all_stat.dat; draw_area ← tracks_in_area, границы области из её .mat
+```
+«Что показывать» — `compute_frame` из `preview.py`, «как показывать» — `FrameView`. Таблица xlsx
+и файлы настроек меняются только по «Сохранить».
+
 ## 3. Функции по файлам
 
 Колонки: что делает; кто вызывает; что использует; аналог в MATLAB (если есть).
@@ -125,31 +152,98 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
 | `last_number_in_name` | последнее число в имени файла | `Frames` | — | ExtractNumber |
-| `Frames` | кадры записи по порядку номеров, размер кадра | main/st1, `RecordPreview`, `_frames` | `last_number_in_name` | imLoader_anyext, FilesInFolder |
-| `Frames.gray` | кадр № (с 1) как массив float64 | main/st1, `RecordPreview.frame`, `compute_frame`, `_background` | — | getImageDoubleGray |
+| `Frames` | кадры записи по порядку номеров, размер кадра | main/st1, `RecordPreview`, `_frames`, `RecordsPage` | `last_number_in_name` | imLoader_anyext, FilesInFolder |
+| `Frames.gray` | кадр № (с 1) как массив float64 | main/st1, `RecordPreview.frame`, `compute_frame`, `_background`, `RecordsPage` | — | getImageDoubleGray |
 | `to_cell` | список → ячейка MATLAB N×1 | main/st1, `save_tracks` | — | cell |
-| `load_cell` | ячейка из .mat → список | `load_particles`, main/st4, tests | — | load |
+| `load_cell` | ячейка из .mat → список | `load_particles`, main/st4, `ResultsPage`, tests | — | load |
 | `save_mat` | запись .mat | main/st1, main/st4, `save_tracks` | — | save |
-| `load_particles` | капли из particles.mat по кадрам | main/st2, `RecordPreview._load_matlab`, tests | `load_cell` | — |
+| `load_particles` | капли из particles.mat по кадрам | main/st2, `RecordPreview._load_matlab`, `RecordsPage`, tests | `load_cell` | — |
 | `_dat_number` | число в формате %16.7e | `save_dat` | — | — |
 | `save_dat` | таблица в .dat как save -ascii | main/st4 | `_dat_number` | save -ascii |
-| `load_dat` | .dat → таблица | tests | — | load |
+| `load_dat` | .dat → таблица | `ResultsPage`, tests | — | load |
 
 ### [lib/common/records.py](lib/common/records.py) — таблица записей и цикл стадии
 
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
-| `Record` | одна строка таблицы | `read_records` | — | строка rec_list |
-| `Record.has_frames` | задан ли диапазон кадров | `run_stage`, `Viewer`, tests | — | — |
-| `Record.images_dir` | папка кадров записи | main/st1, `RecordPreview` | — | fullfile(images_folder_base, …) |
-| `Record.st1_dir` | папка результата st1 | main/st1, main/st2, `RecordPreview._load_matlab`, tests | — | outputFolder st1 |
-| `Record.st2_dir` | папка результата st2 | main/st2, main/st4, tests | — | outputFolder st2 |
-| `Record.st4_dir` | папка результата st4 | main/st4, tests | — | outputFolder st4 |
-| `_text` | ячейка → текст | `read_records` | — | — |
-| `_number` | ячейка → число или None | `read_records`, `_integer` | — | — |
-| `_integer` | ячейка → целое или None | `read_records` | `_number` | — |
+| `Record` | одна строка таблицы | `read_records`, `EditableTable.record` | — | строка rec_list |
+| `Record.has_frames` | задан ли диапазон кадров | `run_stage`, `Viewer`, `EditableTable.filled`, `RecordsPage`, tests | — | — |
+| `Record.images_dir` | папка кадров записи | main/st1, `RecordPreview`, `RecordsPage` | — | fullfile(images_folder_base, …) |
+| `Record.st1_dir` | папка результата st1 | main/st1, main/st2, `RecordPreview._load_matlab`, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st1 |
+| `Record.st2_dir` | папка результата st2 | main/st2, main/st4, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st2 |
+| `Record.st4_dir` | папка результата st4 | main/st4, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st4 |
+| `_text` | ячейка → текст | `read_records`, `read_table`, `save_cells`, `EditableTable` | — | — |
+| `_number` | ячейка → число или None | `read_records`, `_integer`, `EditableTable.record` | — | — |
+| `_integer` | ячейка → целое или None | `read_records`, `EditableTable.record` | `_number` | — |
 | `read_records` | записи из xlsx с выбором по условиям и именам | `run_stage`, `Viewer`, tests | `Record`, `_text`, `_number`, `_integer` | My_importfile_xls_with_headers_to_table_v1 |
 | `run_stage` | цикл стадии по записям, лог, код выхода | main/st1, main/st2, main/st4 | `read_records`, `process_record` стадии | цикл по rr_i |
+
+### [lib/common/table_edit.py](lib/common/table_edit.py) — таблица записей для приложения
+
+| Функция | Что делает | Кто вызывает | Использует | MATLAB |
+|---|---|---|---|---|
+| `TableSaveError` | таблицу не удалось записать (файл не изменён) | `save_cells`, `RecordsPage.save` | — | — |
+| `TableRow` | строка данных: номер строки Excel и значения по заголовкам | `read_table` | — | — |
+| `is_empty` | пустая ли ячейка | `same_value`, `EditableTable` | — | — |
+| `same_value` | одинаковы ли значения ячеек (200 = 200.0) | `EditableTable`, `RecordsPage` | `is_empty` | — |
+| `format_value` | значение ячейки → текст поля ввода | `RecordsPage` | — | — |
+| `read_table` | все колонки (заголовки, описания) и строки с rec_name | `EditableTable` | `TableRow`, `_text` | — |
+| `save_cells` | запись изменённых ячеек в xlsx (остальное не трогается) | `EditableTable.save` | `_text` | — |
+| `EditableTable` | таблица с несохранёнными правками | `RecordsPage`, tests | `read_table` | — |
+| `EditableTable.column` | заголовок колонки величины (rim или rim_new, cx или c_x …) | `EditableTable`, `RecordsPage` | `COLUMN_NAMES` | — |
+| `EditableTable.original` | значение ячейки в файле | `EditableTable` | — | — |
+| `EditableTable.value` | значение ячейки с учётом правок | `EditableTable`, `RecordsPage` | — | — |
+| `EditableTable.set` | правка ячейки | `EditableTable.fill_like_previous`, `RecordsPage.set_value` | `same_value` | — |
+| `EditableTable.changed` | есть ли правка в строке или ячейке | `RecordsPage` | — | — |
+| `EditableTable.name` | rec_name строки | `RecordsPage` | — | — |
+| `EditableTable.is_text` | текстовая ли колонка | `EditableTable.parse` | — | — |
+| `EditableTable.is_numeric` | числовая ли колонка | `EditableTable.parse` | — | — |
+| `EditableTable.parse` | текст поля → значение ячейки (число, текст, пусто) | `RecordsPage` | `EditableTable.is_text`, `EditableTable.is_numeric` | — |
+| `EditableTable.record` | строка как `Record` (те же правила, что `read_records`) | `EditableTable`, `RecordsPage` | `Record`, `_text`, `_number`, `_integer` | — |
+| `EditableTable.filled` | заполнена ли запись (задан диапазон кадров) | `EditableTable` | `EditableTable.record` | — |
+| `EditableTable.previous_filled` | ближайшая выше (иначе ниже) заполненная запись | `EditableTable.suggestion` | `EditableTable.filled` | — |
+| `EditableTable.suggestion` | подсказка для пустого поля | `RecordsPage` | `EditableTable.previous_filled` | — |
+| `EditableTable.common_values` | колонки, одинаковые во всех заполненных записях | `EditableTable.fill_like_previous`, `RecordsPage` | `same_value` | — |
+| `EditableTable.fill_like_previous` | «как у предыдущих»: пустые поля — общими значениями | `RecordsPage.fill_like_previous` | `EditableTable.common_values` | — |
+| `EditableTable.save` | копия таблицы, запись правок, перечитывание | `RecordsPage.save` | `save_cells`, `read_table` | — |
+
+### [lib/common/config_edit.py](lib/common/config_edit.py) — файлы настроек для приложения
+
+| Функция | Что делает | Кто вызывает | Использует | MATLAB |
+|---|---|---|---|---|
+| `Setting` | значение файла настроек: имя, текст, значение, комментарии, раздел, место в файле | `parse_settings` | — | — |
+| `_char_column` | номер символа в строке по смещению в байтах (так считает ast) | `parse_settings` | — | — |
+| `literal` | текст литерала Python → значение (ошибка — понятный текст) | `SettingsFile`, `ParamField`, `ParamsPanel` | — | — |
+| `parse_settings` | значения `ИМЯ = литерал` с комментариями и разделами из текста файла | `SettingsFile` | `Setting`, `_char_column` | — |
+| `value_text` | значение → текст литерала (строки с «\\» — как r"...") | `ParamField`, tests | — | — |
+| `kind_of` | вид значения словами: число, строка, кортеж, список | `SettingsFile.set_text` | — | — |
+| `SettingsFile` | файл настроек с несохранёнными правками | `ParamsPanel`, tests | `SettingsFile._read` | — |
+| `SettingsFile._read` | прочитать файл (правки забываются) | `SettingsFile`, `SettingsFile.save` | `parse_settings` | — |
+| `SettingsFile.text` | текст значения с учётом правок | `SettingsFile`, `ParamsPanel` | — | — |
+| `SettingsFile.value` | значение с учётом правок | `SettingsFile`, `ParamsPanel.save`, tests | `literal` | — |
+| `SettingsFile.values` | все значения файла с учётом правок | `ParamsPanel.working` | `SettingsFile.value` | — |
+| `SettingsFile.set_text` | правка значения (литерал того же вида, что в файле) | `ParamsPanel`, tests | `literal`, `kind_of` | — |
+| `SettingsFile.changed` | есть ли правки (у значения или в файле) | `ParamsPanel` | — | — |
+| `SettingsFile.discard` | забыть правки | `ParamsPanel.discard` | — | — |
+| `SettingsFile.save` | записать в файл только изменённые значения, перечитать | `ParamsPanel.save`, tests | `parse_settings`, `literal` | — |
+| `current_experiment` | эксперимент, выбранный в experiments/current.py | `MainWindow`, tests | — | — |
+| `set_current_experiment` | выбрать эксперимент в experiments/current.py (комментарии остаются) | `MainWindow._make_current`, tests | — | — |
+
+### [lib/common/jobs.py](lib/common/jobs.py) — запуск стадий для приложения
+
+| Функция | Что делает | Кто вызывает | Использует | MATLAB |
+|---|---|---|---|---|
+| `Job` | задание: запись, цепочка стадий, файлы настроек и порогов | `JobsPage.start`, tests | `Record` | — |
+| `load_module` | модуль из файла .py (настройки, пороги, скрипт стадии) | `run_job` | — | — |
+| `_QueueLog` | строки хода работы (logging) → очередь сообщений приложения | `run_job` | — | — |
+| `_QueueLog.emit` | отправить строку в очередь | logging | — | — |
+| `run_job` | стадии задания по порядку (в отдельном процессе): `process_record` скриптов main/ | `JobRunner.poll` (новый процесс) | `load_module`, `_QueueLog` | — |
+| `JobRunner` | очередь заданий: по процессу на запись, не больше workers сразу | `JobsPage`, tests | — | — |
+| `JobRunner.submit` | поставить задания в очередь | `JobsPage.start`, tests | — | — |
+| `JobRunner.busy` | есть ли ожидающие или идущие задания | `JobsPage`, tests | — | — |
+| `JobRunner._drain` | забрать пришедшие сообщения процессов | `JobRunner.poll`, `JobRunner.stop` | — | — |
+| `JobRunner.poll` | запустить ожидающие, забрать сообщения, заметить упавшие процессы | `JobsPage._poll`, tests | `run_job`, `JobRunner._drain` | — |
+| `JobRunner.stop` | остановить всё (процессы завершаются) | `JobsPage.stop`, `JobsPage.shutdown` | `JobRunner._drain` | — |
 
 ### [lib/st1/droplets.py](lib/st1/droplets.py) — удаление рима и поиск капель
 
@@ -192,8 +286,8 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 | `PivGrid` | узлы сетки PIV | `Piv` | — | PIV_Grid |
 | `PivGrid.regular` | регулярная сетка с шагом | `Piv` | — | PIV_Grid(0:step:W, 0:step:H) |
 | `PivGrid.shape` | (nx, ny) | `Piv.compute` | — | — |
-| `PivGrid.x_mat` | x узлов, (nx, ny) | `velocity_at_points`, `ViewDrawer.show`, `PivGrid.to_struct` | — | xMat |
-| `PivGrid.y_mat` | y узлов, (nx, ny) | `velocity_at_points`, `ViewDrawer.show`, `PivGrid.to_struct` | — | yMat |
+| `PivGrid.x_mat` | x узлов, (nx, ny) | `velocity_at_points`, `ViewDrawer.show`, `FrameView.show`, `PivGrid.to_struct` | — | xMat |
+| `PivGrid.y_mat` | y узлов, (nx, ny) | `velocity_at_points`, `ViewDrawer.show`, `FrameView.show`, `PivGrid.to_struct` | — | yMat |
 | `PivGrid.to_struct` | поля PIV_Grid для .mat | `Piv` | — | — |
 | `PivResult` | результат PIV пары кадров | `Piv.compute`, `filter_piv` | — | PIV_output |
 | `PivResult.to_struct` | структура PIV_output для .mat | main/st1 | — | — |
@@ -222,12 +316,12 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
-| `FrameJob` | задание на расчёт одного кадра | `RecordPreview` | — | — |
+| `FrameJob` | задание на расчёт одного кадра | `RecordPreview`, `FrameComputer` | — | — |
 | `FrameResult` | результат расчёта кадра | `compute_frame` | — | — |
-| `FrameResult.erased_mask` | маска закрашенного | `ViewDrawer.show` | — | — |
+| `FrameResult.erased_mask` | маска закрашенного | `ViewDrawer.show`, `FrameView.show` | — | — |
 | `_frames` | кадры записи, запоминаются в процессе | `compute_frame`, `_background` | `Frames` | — |
 | `_background` | кадр фона, запоминается | `compute_frame` | `_frames` | — |
-| `compute_frame` | st1 для одного кадра | `RecordPreview.result`, `RecordPreview.submit_all` | `RimRemover`, `DropletFinder`, `Piv`, `filter_piv_by_thresholds`, `velocity_at_points` | st1 для кадра |
+| `compute_frame` | st1 для одного кадра | `RecordPreview.result`, `RecordPreview.submit_all`, `FrameComputer` | `RimRemover`, `DropletFinder`, `Piv`, `filter_piv_by_thresholds`, `velocity_at_points` | st1 для кадра |
 | `RecordPreview` | кадры записи, расчёт по требованию и в фоне | `Viewer`, tests | `Frames`, `FrameJob` | — |
 | `RecordPreview._load_matlab` | капли MATLAB для сравнения | `RecordPreview` | `load_particles` | — |
 | `RecordPreview.frame` | исходный кадр k | `ViewDrawer.show` | `Frames.gray` | — |
@@ -251,7 +345,7 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
 | `save_tracks` | траектории в ptv_unfiltered.mat | main/st2 | `to_cell`, `save_mat` | save p_arr |
-| `draw_tracks` | траектории на оси | `plot_tracks` | — | plot |
+| `draw_tracks` | траектории на оси | `plot_tracks`, `ResultsPage` | — | plot |
 | `plot_tracks` | tracks.png | main/st2 | `draw_tracks` | saveas |
 | `PolyFit` | МНК-полином с оценкой погрешности | `Tracker._extend` | — | polyfit с S |
 | `PolyFit.value_and_delta` | значение полинома и его погрешность | `Tracker._extend` | — | polyval с S |
@@ -264,16 +358,16 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
-| `Area` | прямоугольная область поиска, px | main/st4 | — | search_area_x, search_area_y |
+| `Area` | прямоугольная область поиска, px | main/st4, `ResultsPage` | — | search_area_x, search_area_y |
 | `px_to_mm` | положение px → мм от (cx, cy) | main/st4, `draw_area` | — | px2mm |
 | `px_per_frame_to_m_per_s` | px/кадр → м/с | main/st4 | — | vpx2vmps |
 | `segments_intersect` | пересечения отрезков | `tracks_in_area` | — | lineSegmentIntersect |
-| `tracks_in_area` | средние по траекториям в области | main/st4 | `segments_intersect` | st4_…_v1_function2 |
-| `area_file_name` | имя файла области | main/st4 | — | sprintf имени |
-| `draw_area` | картинка области на двух осях | `plot_area` | `px_to_mm` | plot, quiver |
+| `tracks_in_area` | средние по траекториям в области | main/st4, `ResultsPage` | `segments_intersect` | st4_…_v1_function2 |
+| `area_file_name` | имя файла области | main/st4, `ResultsPage` | — | sprintf имени |
+| `draw_area` | картинка области на двух осях | `plot_area`, `ResultsPage` | `px_to_mm` | plot, quiver |
 | `plot_area` | картинка области в файл | main/st4 | `draw_area` | saveas |
 
-### [main/](main/) и [tools/](tools/)
+### [main/](main/), [tools/](tools/) и [app/](app/)
 
 - `process_record` в каждом скрипте `main/` — обработка одной записи стадии (деревья — в разделе 2);
   вызывается из `run_stage`, а в тестах — напрямую.
@@ -282,28 +376,48 @@ Viewer (окно, клавиши, таймер, слайдшоу)
   `_open`, `_switch`, `_reload` (открыть запись, сменить запись, перечитать настройки).
 - [tools/make_docx.py](tools/make_docx.py): Word-версии документации в папку `docx/` (pandoc);
   `fix_links` переписывает ссылки для документа в подпапке, `convert` — один документ.
+- [app/](app/) — приложение (PySide6 + pyqtgraph), дерево вызовов — в разделе 2:
+  - [run.py](app/run.py): `main` — запуск окна;
+  - [window.py](app/window.py): `MainWindow` — выбор эксперимента (`experiment_names`, `experiment_name`,
+    `_choose_experiment`, `_make_current` — запись в experiments/current.py), вкладки (`_tab_changed`), `save` (Ctrl+S — таблица
+    и настройки), `reload` (F5), вопрос о несохранённых правках (`_confirm_discard`, `closeEvent`);
+  - [records_page.py](app/records_page.py): `RecordsPage` — вкладка «Записи»: список (`_fill_list`, `_update_row`),
+    кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу), поля (`Field`, `_fill_form`, `set_value`,
+    `fill_like_previous`; ползунок rim — `rim_to_slider`, `slider_to_rim`), пересчёт после правки rim
+    (`recompute`), правки панели «Настройки» (`apply_parameters`), запись таблицы (`save`);
+  - [params_page.py](app/params_page.py): `ParamsPanel` — панель «Настройки» (`load`, `working`, `set_text`,
+    `save`, `discard`, поиск — `_filter`); `ParamField` — поле значения с ползунками (`slider_range`,
+    `number_text`, `_numbers`);
+  - [jobs_page.py](app/jobs_page.py): `JobsPage` — вкладка «Запуск» (`refresh`, `set_checked`, `start`, `stop`,
+    разбор сообщений процессов — `_poll`, `_handle`, итог — `_finish`);
+  - [results_page.py](app/results_page.py): `ResultsPage` — вкладка «Результаты» (`refresh`, `show_record`,
+    `_draw_tracks`, `_fill_summary`, `_area_selected`, `open_folder`);
+  - [frame_view.py](app/frame_view.py): `FrameComputer` — расчёт кадров в процессах (`configure`, `focus`,
+    `collect`, `result`); `FrameView` — показ видов 1–5 (`show`), крестик центра (`set_center`), щелчок по кадру
+    (сигнал `clicked`); `FrameScale` — шкала кадров.
 
 ## 4. Настройки и пороги
 
 Настройки эксперимента — `experiments/<эксперимент>/settings.py`, пороги — `thresholds.py` там же,
-значения отдельных записей — таблица xlsx.
+значения отдельных записей — таблица xlsx. Все значения `settings.py` и `thresholds.py` правятся и в приложении
+(панель «Настройки», `ParamsPanel`): с предпросмотром кадра, запись — только изменённых значений.
 
 | Имя | Где задано | Кто использует | На что влияет |
 |---|---|---|---|
-| `IMAGES_DIR` | settings | main/st1, `RecordPreview` | где искать кадры |
-| `TABLE_FILE` | settings | `run_stage`, `Viewer`, tests | таблица записей |
-| `OUTPUT_DIR` | settings | main/st1, main/st2, main/st4 | куда писать результаты |
+| `IMAGES_DIR` | settings | main/st1, `RecordPreview`, `RecordsPage` | где искать кадры |
+| `TABLE_FILE` | settings | `run_stage`, `Viewer`, `RecordsPage`, tests | таблица записей |
+| `OUTPUT_DIR` | settings | main/st1, main/st2, main/st4, `RecordsPage` | куда писать результаты; приложение — отметки st1/st2/st4 и копии таблицы (`table_backups`) |
 | `CONDITIONS` | settings | `run_stage`, `Viewer` | какие условия обрабатывать |
 | `RECORDS` | settings | `run_stage`, `Viewer` | какие записи обрабатывать |
-| `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview` | перевод px → мм, px/кадр → м/с |
-| `FPS` | settings | main/st4, `RecordPreview` | перевод px/кадр → м/с |
+| `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с |
+| `FPS` | settings | main/st4, `RecordPreview`, `RecordsPage` | перевод px/кадр → м/с |
 | `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода |
 | `BACKGROUND_FRAME` | settings | main/st1, `compute_frame` | какой кадр — фон |
 | `ERASE_REGIONS` | settings | `RimRemover` (main/st1, `compute_frame`) | вручную закрашиваемые области |
 | `AREA_X` | settings | main/st4 | границы областей по x |
 | `AREA_HEIGHTS` | settings | main/st4 | высоты областей |
 | `AREA_LOW_EDGES` | settings | main/st4 | положения нижних краёв областей |
-| `MATLAB_RESULTS_DIR` | settings | `RecordPreview`, tests/compare_with_matlab.py | где результаты MATLAB для сравнения |
+| `MATLAB_RESULTS_DIR` | settings | `RecordPreview`, `RecordsPage`, tests/compare_with_matlab.py | где результаты MATLAB для сравнения |
 | `RIM_GRAY_RANGE` | thresholds | `RimRemover.from_thresholds` | растяжение «кадр − фон» |
 | `RIM_BINARIZE_THRESHOLD` | thresholds | `RimRemover.from_thresholds` | что считать тёмным объектом |
 | `RIM_CLOSE_RADIUS` | thresholds | `RimRemover.from_thresholds` | насколько склеивать тёмное в объекты |
@@ -327,14 +441,14 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 | `PTV_MIN_STRAIGHTNESS` | thresholds | main/st2 → `Tracker` | прямолинейность |
 | `PTV_PIV_WEIGHT` | thresholds | main/st2 → `Tracker` | вес PIV в предсказании |
 | `PTV_POLY_POINTS` | thresholds | main/st2 → `Tracker` | число точек для полинома |
-| `TRACKS_PLOT_MIN_POINTS` | thresholds | main/st2 → `plot_tracks` | граница «длинная/короткая» на tracks.png |
-| `AREA_PLOT_ARROW_SCALE` | thresholds | main/st4 → `plot_area` | длина стрелок на картинках st4 |
-| `AREA_PLOT_Y_LIMITS_MM` | thresholds | main/st4 → `plot_area` | пределы по y на картинках st4 |
-| `PIV_PLOT_ARROW_SCALE` | thresholds | `RecordPreview` → `ViewDrawer.show` | длина стрелок PIV в окне просмотра |
-| `PIV_PLOT_SPEED_MAX` | thresholds | `RecordPreview` → `ViewDrawer.show` | верх цветовой шкалы скорости в окне |
-| `rim` / `rim_new` | таблица xlsx | `RimRemover.remove` | порог площади рима и крупных брызг, px² |
-| `start_frame`, `fin_frame` | таблица xlsx | main/st1, `RecordPreview` | диапазон кадров записи |
-| `cx` / `c_x`, `cy` / `c_y` | таблица xlsx | main/st4 | начало координат в мм |
+| `TRACKS_PLOT_MIN_POINTS` | thresholds | main/st2 → `plot_tracks`, `ResultsPage` | граница «длинная/короткая» на tracks.png |
+| `AREA_PLOT_ARROW_SCALE` | thresholds | main/st4 → `plot_area`, `ResultsPage` | длина стрелок на картинках st4 |
+| `AREA_PLOT_Y_LIMITS_MM` | thresholds | main/st4 → `plot_area`, `ResultsPage` | пределы по y на картинках st4 |
+| `PIV_PLOT_ARROW_SCALE` | thresholds | `RecordPreview` → `ViewDrawer.show`, `RecordsPage` → `FrameView.show` | длина стрелок PIV в окне просмотра и приложении |
+| `PIV_PLOT_SPEED_MAX` | thresholds | `RecordPreview` → `ViewDrawer.show`, `RecordsPage` → `FrameView.show` | верх цветовой шкалы скорости в окне и приложении |
+| `rim` / `rim_new` | таблица xlsx | `RimRemover.remove`; правится в приложении | порог площади рима и крупных брызг, px² |
+| `start_frame`, `fin_frame` | таблица xlsx | main/st1, `RecordPreview`; правится в приложении | диапазон кадров записи |
+| `cx` / `c_x`, `cy` / `c_y` | таблица xlsx | main/st4; правится в приложении (щелчок «центр затравки») | начало координат в мм |
 
 ## 5. Словарь данных
 
@@ -375,9 +489,9 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
 
 | Файл | Что проверяет |
 |---|---|
-| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области |
-| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1 |
-| [test_docs.py](tests/test_docs.py) | описания у всех функций; полнота таблиц этого файла |
+| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, выбор эксперимента в current.py |
+| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области |
+| [test_docs.py](tests/test_docs.py) | описания у всех функций (lib/, main/, tools/, app/); полнота таблиц этого файла |
 | [compare_with_matlab.py](tests/compare_with_matlab.py) | не тест, а отчёт: насколько результаты совпадают с результатами MATLAB |
 
 ## 7. Как расширять
@@ -386,6 +500,8 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
   и `thresholds.py`, выбрать её в `current.py`. Код не меняется.
 - **Новый порог** — добавить в `thresholds.py` всех экспериментов, использовать в `from_thresholds`
   нужного класса (или в `process_record`), добавить строку в раздел 4 этого файла.
+- **Новая вкладка приложения** — новый файл в [app/](app/) по образцу `RecordsPage`, вкладка добавляется
+  в `MainWindow`; расчёты — функциями из `lib/` (окно их не дублирует).
 - **Новый способ просмотра st1** — короткая оболочка над `RecordPreview` и `ViewDrawer`
   ([lib/st1/preview.py](lib/st1/preview.py)), по образцу `Viewer` ([tools/st1_viewer.py](tools/st1_viewer.py)).
 - **Новая функция в `lib/`** — описание в коде и строка в разделе 3; `test_docs.py` напомнит, если забыть.

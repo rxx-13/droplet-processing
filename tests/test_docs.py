@@ -1,6 +1,6 @@
 r"""Проверка, что документация не отстала от кода.
 
-    * у каждой функции и класса в lib/, main/, tools/ есть описание (docstring);
+    * у каждой функции и класса в lib/, main/, tools/, app/ есть описание (docstring);
       исключения — вложенные функции-помощники и служебные методы вида __init__ (их аргументы
       описаны в описании класса);
     * каждая функция и класс из lib/ (методы — как Класс.метод) есть в таблицах CODE_GUIDE.md,
@@ -43,7 +43,7 @@ def _code_files(*folders: str) -> list[Path]:
 
 def test_every_function_and_class_has_a_description():
     missing = [f"{path.relative_to(ROOT)}: {name}"
-               for path in _code_files("lib", "main", "tools")
+               for path in _code_files("lib", "main", "tools", "app")
                for name, node in _definitions(path)
                if not _is_dunder(name) and not ast.get_docstring(node)]
     assert not missing, "Нет описания (docstring):\n" + "\n".join(missing)
