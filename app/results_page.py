@@ -187,6 +187,7 @@ class ResultsPage(QWidget):
         path = folder / RESULT_FILES["st4"][1] if folder is not None else None
         stat = files.load_dat(path) if path is not None and path.exists() else np.zeros((0, 6))
         _fill_table(self.summary, stat, integer_columns=(2,))
+        self.summary.clearSelection()  # иначе прежнее выделение остаётся и картинка ниже не рисуется
         self.summary.blockSignals(False)
         if path is None or not path.exists():
             self.areas_info.setText("Результатов st4 нет: запустите st4 для этой записи (вкладка «Запуск»)")

@@ -352,6 +352,9 @@ def test_app_runs_stages_like_main_scripts_and_shows_results(run, tmp_path):
     assert results.tracks_info.text().startswith("траекторий") and results.summary.rowCount() == 3
     results.summary.selectRow(1)
     assert results.area_table.rowCount() >= 5 and "траекторий" in results.area_info.text()
+    results.summary.selectRow(0)
+    results.refresh()  # вкладку открыли ещё раз: первая строка уже выделена, а картинка всё равно рисуется
+    assert len(results.area_figure.axes) == 2 and results.area_table.rowCount() >= 5
 
     jobs.start()
     jobs.stop()  # «Остановить» сразу после запуска
