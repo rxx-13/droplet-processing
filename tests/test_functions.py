@@ -3,7 +3,11 @@ r"""Проверки отдельных функций на маленьких �
 Запуск:  .venv\Scripts\python.exe -B -m pytest
 """
 
+import base64
+import csv
+import lzma
 import math
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +16,10 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import PatternFill
 
+from lib.analysis.dataset import DataTable
+from lib.analysis.formulas import computed_columns, evaluate, fit, names_in, parameters_of
+from lib.analysis.labplot import write_csv, write_lml
+from lib.analysis.stats import Condition, binned, histogram, select, split, window_edges
 from lib.common.config_edit import SettingsFile, current_experiment, set_current_experiment, value_text
 from lib.common.files import last_number_in_name, save_dat
 from lib.common.records import read_records
@@ -121,6 +129,19 @@ def test_table_edit_records_and_autofill_from_filled_records(tmp_path):
     # «как у предыдущих» — только колонки, одинаковые во всех заполненных записях (rim у них разный)
     assert table.fill_like_previous(3) == ["c_x", "c_y"]
     assert (table.record(3).cx, table.record(3).cy, table.record(3).rim) == (28, 883, None)
+
+
+def test_table_edit_adds_missing_column_at_first_free_place(tmp_path):
+    path = _table(tmp_path / "t.xlsx", TABLE_HEADERS, [[1, "0201", "w"], [1, "0202", "w"]])
+    table = EditableTable(path)
+    table.add_column("bag_length", "длина бэга, мм")
+    table.add_column("bag_frame", "кадр")  # без значений — в файл не попадёт
+    table.set(1, "bag_length", 41.25)
+    table.save()
+    sheet = load_workbook(path).active
+    assert [c.value for c in sheet[1]] == TABLE_HEADERS + ["bag_length"]
+    assert (sheet["I2"].value, sheet["I3"].value, sheet["I4"].value) == ("длина бэга, мм", None, 41.25)
+    assert table.headers[-1] == "bag_length" and not table.new_columns
 
 
 def test_table_edit_does_not_overwrite_rows_changed_in_excel_or_open_file(tmp_path, monkeypatch):
@@ -292,3 +313,57 @@ def test_units():
     assert px_to_mm(np.array([[120.0, 948.0]]), 0.5, 100.0, 1000.0).tolist() == [[10.0, 26.0]]
     v = px_per_frame_to_m_per_s(np.array([[2.0, 3.0]]), 0.06263, 3990)
     assert np.allclose(v, [[2 * 0.06263 / 1000 * 3990, -3 * 0.06263 / 1000 * 3990]])
+
+
+# ------------------------------------------------------------------ обработка результатов
+
+
+def test_selection_windows_histogram_and_binned_statistics():
+    table = DataTable({"record": np.array(["a", "a", "b", "b", "b"], dtype=object),
+                       "F": np.array([140.0, 140.0, 160.0, 160.0, 160.0]),
+                       "r": np.array([1.0, 2.0, 2.5, 3.0, 4.0]), "v": np.array([10.0, 12.0, 5.0, 7.0, 9.0])})
+    assert len(select(table, [Condition("F", (160.0,)), Condition("r", low=2.5, high=3.0)])) == 2
+    assert len(select(table, [Condition("record", ("a",))])) == 2
+    edges = window_edges(table.columns["r"], width=1.0, low=1.0)
+    assert edges.tolist() == [1.0, 2.0, 3.0, 4.0]  # до максимума r = 4
+    assert histogram(table.columns["r"], edges).y.tolist() == [1, 2, 2]  # 4 — в последнее окно
+    density = histogram(table.columns["r"], np.array([0.0, 2.0, 4.0]), "density")
+    assert np.allclose(density.y, [1 / 5 / 2, 4 / 5 / 2])  # доля / ширина окна
+    s = binned(table.columns["r"], table.columns["v"], edges, "mean_std")
+    assert np.allclose(s.y, [10, 8.5, 8]) and np.allclose(s.high - s.y, [0, np.std([12, 5], ddof=1), np.std([7, 9], ddof=1)])
+    median = binned(table.columns["r"], table.columns["v"], np.array([0.0, 5.0]), "median")
+    assert median.y[0] == 9 and (median.low[0], median.high[0]) == (7, 10)
+    assert [label for label, part in split(table, "F")] == ["F = 140", "F = 160"]
+
+
+def test_labplot_project_and_csv_hold_the_same_numbers(tmp_path):
+    columns = {"record": np.array(["a", "b"], dtype=object), "r": np.array([1.5, np.nan]), "v": np.array([2.0, 3.0])}
+    write_lml(tmp_path / "p.lml", {"выборка": columns, "кривая": {"x": np.array([0.5]), "y": np.array([7.0])}})
+    project = ET.fromstring(lzma.decompress((tmp_path / "p.lml").read_bytes()).decode("utf-8"))
+    assert project.tag == "project" and project.get("xmlVersion") == "7"
+    sheets = project.findall("child_aspect/spreadsheet")
+    assert [sheet.get("name") for sheet in sheets] == ["выборка", "кривая"]
+    record, r, v = sheets[0].findall("column")
+    assert record.get("mode") == "1" and [row.text for row in record.findall("row")] == ["a", "b"]
+    data = np.frombuffer(base64.b64decode(r.find("output_filter").tail), dtype="<f8")  # числа — после фильтров
+    assert r.get("mode") == "0" and r.get("designation") == "2" and data[0] == 1.5 and np.isnan(data[1])
+    assert record.get("designation") == "1"  # первая колонка — X
+
+    write_csv(tmp_path / "t.csv", columns)
+    rows = list(csv.reader(open(tmp_path / "t.csv", encoding="utf-8")))
+    assert rows == [["record", "r", "v"], ["a", "1.5", "2.0"], ["b", "", "3.0"]]
+
+
+def test_formulas_columns_and_fit_and_only_arithmetic_is_allowed():
+    assert names_in("a*x**b + c") == ["a", "x", "b", "c"] and parameters_of("a*x**b + c") == ["a", "b", "c"]
+    assert evaluate("sqrt(vx**2 + vy**2)", {"vx": np.array([3.0]), "vy": np.array([4.0])}).tolist() == [5.0]
+    for bad in ('__import__("os")', "x.real", "open(1)", '"text"', "(lambda: 1)()"):
+        with pytest.raises(ValueError):
+            evaluate(bad, {"x": 1.0})  # формулой ничего, кроме вычислений, не сделать
+    table = DataTable({"F": np.array([140.0, 160.0]), "record": np.array(["a", "b"], dtype=object)})
+    extended, errors = computed_columns(table, "U = 0.07*F\nU2 = 2*U  # колонка из колонки выше\nплохо\nF = 1\nW = Q")
+    assert extended.columns["U2"].tolist() == [19.6, 22.400000000000002] and len(errors) == 3
+    x = np.linspace(1.0, 10.0, 25)
+    result = fit("a*x**b + c", x, 2.5 * x**1.7 + 3.0, {"a": 1.0, "b": 1.0, "c": 0.0})
+    assert result.ok and np.allclose([result.values[p] for p in "abc"], [2.5, 1.7, 3.0], rtol=1e-4) and result.r2 > 0.999
+    assert not fit("a*x", x[:0], x[:0], {}).ok  # нет точек — понятный отказ, а не ошибка

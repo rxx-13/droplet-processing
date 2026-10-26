@@ -120,7 +120,8 @@ Viewer (окно, клавиши, таймер, слайдшоу)
 ### Приложение — [app/](app/)
 
 ```
-run.py → MainWindow (window.py)                  выбор эксперимента, «Сделать текущим», вкладки, Ctrl+S, F5
+run.py → MainWindow (window.py)                  две части: «Обработка измерений» (выбор эксперимента,
+│                                                «Сделать текущим», вкладки ниже, Ctrl+S, F5) и «Обработка результатов»
 │     current_experiment, set_current_experiment (lib/common/config_edit.py) — experiments/current.py
 ├─ RecordsPage (records_page.py)                 вкладка «Записи»
 │   ├─ EditableTable (lib/common/table_edit.py)  таблица: все колонки, правки в памяти, автозаполнение
@@ -138,8 +139,14 @@ run.py → MainWindow (window.py)                  выбор экспериме
 ├─ JobsPage (jobs_page.py)                       вкладка «Запуск»: отмеченные записи, стадии st1 → st2 → st4
 │     JobRunner (lib/common/jobs.py)             по процессу на запись; в процессе run_job → process_record из main/
 │     сообщения процессов (ход работы, итог)     → колонка «Ход», общий лог, счётчики
-└─ ResultsPage (results_page.py)                 вкладка «Результаты»
-      draw_tracks ← ptv_unfiltered.mat; _all_stat.dat; draw_area ← tracks_in_area, границы области из её .mat
+├─ ResultsPage (results_page.py)                 вкладка «Результаты»
+│     draw_tracks ← ptv_unfiltered.mat; _all_stat.dat; draw_area ← tracks_in_area, границы области из её .mat
+└─ AnalysisPage (analysis_page.py)               часть «Обработка результатов» (от эксперимента не зависит)
+      find_sources, load (lib/analysis/dataset.py) ← итоговые .mat / .dat st4 + параметры записей из таблиц
+      computed_columns (lib/analysis/formulas.py)    свои колонки «имя = формула»
+      ConditionRow → Condition, select; window_edges; histogram / binned / points; split (lib/analysis/stats.py)
+      fit, evaluate (lib/analysis/formulas.py)       своя кривая и подгонка параметров
+      write_csv, write_lml (lib/analysis/labplot.py)  экспорт в CSV и проект LabPlot; state / set_state — настройки в .json
 ```
 «Что показывать» — `compute_frame` из `preview.py`, «как показывать» — `FrameView`. Таблица xlsx
 и файлы настроек меняются только по «Сохранить».
@@ -189,9 +196,10 @@ run.py → MainWindow (window.py)                  выбор экспериме
 | `same_value` | одинаковы ли значения ячеек (200 = 200.0) | `EditableTable`, `RecordsPage` | `is_empty` | — |
 | `format_value` | значение ячейки → текст поля ввода | `RecordsPage` | — | — |
 | `read_table` | все колонки (заголовки, описания) и строки с rec_name | `EditableTable` | `TableRow`, `_text` | — |
-| `save_cells` | запись изменённых ячеек в xlsx (остальное не трогается) | `EditableTable.save` | `_text` | — |
+| `save_cells` | запись изменённых ячеек в xlsx (остальное не трогается) и новых колонок | `EditableTable.save` | `_text` | — |
 | `EditableTable` | таблица с несохранёнными правками | `RecordsPage`, tests | `read_table` | — |
 | `EditableTable.column` | заголовок колонки величины (rim или rim_new, cx или c_x …) | `EditableTable`, `RecordsPage` | `COLUMN_NAMES` | — |
+| `EditableTable.add_column` | добавить колонку, которой нет в таблице (в файл — при save) | `RecordsPage._bag_click`, tests | — | — |
 | `EditableTable.original` | значение ячейки в файле | `EditableTable` | — | — |
 | `EditableTable.value` | значение ячейки с учётом правок | `EditableTable`, `RecordsPage` | — | — |
 | `EditableTable.set` | правка ячейки | `EditableTable.fill_like_previous`, `RecordsPage.set_value` | `same_value` | — |
@@ -245,6 +253,64 @@ run.py → MainWindow (window.py)                  выбор экспериме
 | `JobRunner._drain` | забрать пришедшие сообщения процессов | `JobRunner.poll`, `JobRunner.stop` | — | — |
 | `JobRunner.poll` | запустить ожидающие, забрать сообщения, заметить упавшие процессы | `JobsPage._poll`, tests | `run_job`, `JobRunner._drain` | — |
 | `JobRunner.stop` | остановить всё (процессы завершаются) | `JobsPage.stop`, `JobsPage.shutdown` | `JobRunner._drain` | — |
+
+### [lib/analysis/dataset.py](lib/analysis/dataset.py) — данные для «Обработки результатов»
+
+| Функция | Что делает | Кто вызывает | Использует | MATLAB |
+|---|---|---|---|---|
+| `Source` | результаты одного эксперимента: таблица записей и папка результатов (Python или MATLAB) | `AnalysisPage`, tests | — | — |
+| `Source.label` | подпись «эксперимент — результаты Python» | `AnalysisPage` | — | — |
+| `sources_of` | источники эксперимента по его settings | `find_sources` | `Source` | — |
+| `find_sources` | источники всех экспериментов папки experiments/ | `AnalysisPage.refresh_sources` | `load_module`, `sources_of` | — |
+| `DataTable` | таблица колонок numpy (числа и текст) | `load`, `select`, `AnalysisPage`, tests | — | — |
+| `DataTable.label` | подпись колонки для оси (LABELS или описание из таблицы записей) | `AnalysisPage` | — | — |
+| `DataTable.names` | имена колонок | `AnalysisPage`, `ConditionRow` | — | — |
+| `DataTable.is_numeric` | числовая ли колонка | `Condition.mask`, `split`, `AnalysisPage` | — | — |
+| `DataTable.take` | строки по маске | `select`, `split` | — | — |
+| `DataTable.unique` | разные значения колонки | `split`, `ConditionRow`, `AnalysisPage` | — | — |
+| `DataTable.concat` | таблицы друг под другом | `load`, `AnalysisPage.series_table` | — | — |
+| `_track_blocks` | траектории в областях из `<область>.mat` записи | `load` | — | st4: p_in_area_scale |
+| `_area_blocks` | области из `_all_stat.dat` записи | `load` | `load_dat` | st4: _all_stat |
+| `load` | строки выбранного уровня из результатов st4 источников + параметры записей | `AnalysisPage.load_data`, tests | `EditableTable`, `Record.st4_dir`, `_track_blocks`, `_area_blocks`, `DataTable.concat` | — |
+
+### [lib/analysis/stats.py](lib/analysis/stats.py) — выборка, окна, распределения
+
+| Функция | Что делает | Кто вызывает | Использует | MATLAB |
+|---|---|---|---|---|
+| `Condition` | условие выборки: равно значениям и/или от–до | `ConditionRow.condition`, tests | — | — |
+| `Condition.mask` | какие строки подходят | `select` | `DataTable.is_numeric` | — |
+| `select` | строки, подходящие под все условия | `AnalysisPage.replot`, tests | `Condition.mask`, `DataTable.take` | — |
+| `window_edges` | границы окон: ширина или число, пределы | `AnalysisPage.replot`, tests | — | — |
+| `Series` | посчитанная кривая: x, y, разброс, число, окна | `histogram`, `binned`, `points`, `AnalysisPage` | — | — |
+| `Series.columns` | таблица кривой для экспорта | `AnalysisPage` | — | — |
+| `_window_index` | номер окна каждого значения | `histogram`, `binned` | — | — |
+| `histogram` | распределение по окнам: число, доля, плотность | `AnalysisPage.replot`, tests | `_window_index` | — |
+| `binned` | статистика y по окнам x: среднее ± СКО, ± ошибка среднего, медиана, число | `AnalysisPage.replot`, tests | `_window_index` | — |
+| `points` | точки (x, y) без NaN | `AnalysisPage.replot` | — | — |
+| `label_value` | значение для подписи (целые — без «.0») | `split`, `ConditionRow` | — | — |
+| `split` | серии по значениям колонки | `AnalysisPage.replot`, tests | `DataTable.unique`, `DataTable.take` | — |
+
+### [lib/analysis/formulas.py](lib/analysis/formulas.py) — свои формулы и подгонка
+
+| Функция | Что делает | Кто вызывает | Использует | MATLAB |
+|---|---|---|---|---|
+| `parse` | проверка формулы: только арифметика и функции FUNCTIONS | `names_in`, `evaluate` | — | — |
+| `names_in` | имена в формуле в порядке написания | `parameters_of`, `evaluate`, tests | `parse` | — |
+| `evaluate` | значение формулы по колонкам и параметрам | `fit`, `computed_columns`, `AnalysisPage._curves`, tests | `parse`, `names_in` | — |
+| `parameters_of` | параметры кривой (всё, кроме x и функций) | `fit`, `AnalysisPage._fill_parameters`, tests | `names_in` | — |
+| `FitResult` | итог подгонки: параметры, погрешности, R², число точек | `fit`, `AnalysisPage` | — | — |
+| `fit` | подгонка параметров кривой методом наименьших квадратов | `AnalysisPage._curves`, tests | `parameters_of`, `evaluate`, scipy `curve_fit` | — |
+| `computed_columns` | свои колонки по строкам «имя = формула» | `AnalysisPage._apply_columns`, tests | `evaluate` | — |
+
+### [lib/analysis/labplot.py](lib/analysis/labplot.py) — экспорт в CSV и LabPlot
+
+| Функция | Что делает | Кто вызывает | Использует | MATLAB |
+|---|---|---|---|---|
+| `write_csv` | таблица в CSV | `AnalysisPage.export`, tests | — | — |
+| `_now` | время в записи LabPlot | `_filters`, `_column`, `write_lml` | — | — |
+| `_filters` | фильтры ввода и вывода колонки LabPlot | `_column` | `_now` | — |
+| `_column` | колонка проекта LabPlot (числа base64 или текст по строкам) | `write_lml` | `_filters`, `_now` | — |
+| `write_lml` | проект LabPlot (.lml, xz) с таблицами | `AnalysisPage.export`, tests | `_column`, `_now` | — |
 
 ### [lib/st1/droplets.py](lib/st1/droplets.py) — удаление рима и поиск капель
 
@@ -382,14 +448,15 @@ run.py → MainWindow (window.py)                  выбор экспериме
   `fix_links` переписывает ссылки для документа в подпапке, `convert` — один документ.
 - [app/](app/) — приложение (PySide6 + pyqtgraph), дерево вызовов — в разделе 2:
   - [run.py](app/run.py): `main` — запуск окна;
-  - [window.py](app/window.py): `MainWindow` — выбор эксперимента (`experiment_names`, `experiment_name`,
+  - [window.py](app/window.py): `MainWindow` — две части окна; выбор эксперимента (`experiment_names`, `experiment_name`,
     `_choose_experiment`, `_make_current` — запись в experiments/current.py), вкладки (`_tab_changed`), `save` (Ctrl+S — таблица
     и настройки), `reload` (F5), вопрос о несохранённых правках (`_confirm_discard`, `closeEvent`);
   - [records_page.py](app/records_page.py): `RecordsPage` — вкладка «Записи»: список (`_fill_list`, `_update_row`),
     кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу), поля (`Field`, `_fill_form`, `set_value`,
     `fill_like_previous`; ползунок rim — `rim_to_slider`, `slider_to_rim`), пересчёт после правки rim
     (`recompute`), правки панели «Настройки» (`apply_parameters`), «Капли и PIV»: считать или из результатов
-    st1 (`_source_changed`, `_computes`, `_saved_at`), запись таблицы (`save`);
+    st1 (`_source_changed`, `_computes`, `_saved_at`), размер бэга (`_bag_mode`, `_bag_click`, `_bag_text`),
+    запись таблицы (`save`);
   - [params_page.py](app/params_page.py): `ParamsPanel` — панель «Настройки» (`load`, `working`, `set_text`,
     `save`, `discard`, поиск — `_filter`); `ParamField` — поле значения с ползунками (`slider_range`,
     `number_text`, `_numbers`);
@@ -397,6 +464,12 @@ run.py → MainWindow (window.py)                  выбор экспериме
     разбор сообщений процессов — `_poll`, `_handle`, итог — `_finish`);
   - [results_page.py](app/results_page.py): `ResultsPage` — вкладка «Результаты» (`refresh`, `show_record`,
     `_draw_tracks`, `_fill_summary`, `_area_selected`, `open_folder`);
+  - [analysis_page.py](app/analysis_page.py): `AnalysisPage` — часть «Обработка результатов»; разделы
+    слева — `Section` (сворачиваются): источники (`refresh_sources`, `checked_sources`, `set_checked`), загрузка
+    (`load_data`, `_fill_columns`), свои колонки (`_apply_columns`), выборка (`ConditionRow`, `add_condition`),
+    график (`replot`, `_draw`, `_decorate`, `_finish`; вид — `_style`, `_colors`), своя кривая и подгонка
+    (`_fill_parameters`, `initial_values`, `_curves`), экспорт (`export`, `series_table`, `fit_table`,
+    `_export_dialog`), настройки в файл (`state`, `set_state`);
   - [frame_view.py](app/frame_view.py): `FrameComputer` — расчёт кадров в процессах (`configure`, `focus`,
     `collect`, `result`); `FrameView` — показ видов 1–5 (`show`), крестик центра (`set_center`), щелчок по кадру
     (сигнал `clicked`); `FrameScale` — шкала кадров.
@@ -410,8 +483,8 @@ run.py → MainWindow (window.py)                  выбор экспериме
 | Имя | Где задано | Кто использует | На что влияет |
 |---|---|---|---|
 | `IMAGES_DIR` | settings | main/st1, `RecordPreview`, `RecordsPage` | где искать кадры |
-| `TABLE_FILE` | settings | `run_stage`, `Viewer`, `RecordsPage`, tests | таблица записей |
-| `OUTPUT_DIR` | settings | main/st1, main/st2, main/st4, `RecordsPage` | куда писать результаты; приложение — отметки st1/st2/st4 и копии таблицы (`table_backups`) |
+| `TABLE_FILE` | settings | `run_stage`, `Viewer`, `RecordsPage`, `sources_of`, tests | таблица записей |
+| `OUTPUT_DIR` | settings | main/st1, main/st2, main/st4, `RecordsPage`, `sources_of` | куда писать результаты; приложение — отметки st1/st2/st4 и копии таблицы (`table_backups`) |
 | `CONDITIONS` | settings | `run_stage`, `Viewer` | какие условия обрабатывать |
 | `RECORDS` | settings | `run_stage`, `Viewer` | какие записи обрабатывать |
 | `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с |
@@ -422,7 +495,7 @@ run.py → MainWindow (window.py)                  выбор экспериме
 | `AREA_X` | settings | main/st4 | границы областей по x |
 | `AREA_HEIGHTS` | settings | main/st4 | высоты областей |
 | `AREA_LOW_EDGES` | settings | main/st4 | положения нижних краёв областей |
-| `MATLAB_RESULTS_DIR` | settings | `RecordPreview`, `RecordsPage`, tests/compare_with_matlab.py | где результаты MATLAB для сравнения |
+| `MATLAB_RESULTS_DIR` | settings | `RecordPreview`, `RecordsPage`, `sources_of`, tests/compare_with_matlab.py | где результаты MATLAB для сравнения (и для «Обработки результатов») |
 | `RIM_GRAY_RANGE` | thresholds | `RimRemover.from_thresholds` | растяжение «кадр − фон» |
 | `RIM_BINARIZE_THRESHOLD` | thresholds | `RimRemover.from_thresholds` | что считать тёмным объектом |
 | `RIM_CLOSE_RADIUS` | thresholds | `RimRemover.from_thresholds` | насколько склеивать тёмное в объекты |
@@ -453,6 +526,7 @@ run.py → MainWindow (window.py)                  выбор экспериме
 | `PIV_PLOT_SPEED_MAX` | thresholds | `RecordPreview` → `ViewDrawer.show`, `RecordsPage` → `FrameView.show` | верх цветовой шкалы скорости в окне и приложении |
 | `rim` / `rim_new` | таблица xlsx | `RimRemover.remove`; правится в приложении | порог площади рима и крупных брызг, px² |
 | `start_frame`, `fin_frame` | таблица xlsx | main/st1, `RecordPreview`; правится в приложении | диапазон кадров записи |
+| `bag_hight`, `bag_length`, `bag_frame` | таблица xlsx (`COLUMN_NAMES`: bag_height, bag_length, bag_frame) | `RecordsPage` (размер бэга), `load` («Обработка результатов») | высота и длина бэга, мм, и кадр, на котором измерены; стадиям не нужны |
 | `cx` / `c_x`, `cy` / `c_y` | таблица xlsx | main/st4; правится в приложении (щелчок «центр затравки») | начало координат в мм |
 
 ## 5. Словарь данных
@@ -494,8 +568,8 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
 
 | Файл | Что проверяет |
 |---|---|
-| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py |
-| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области |
+| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py; добавление колонки в таблицу; обработка результатов: выборка, окна, гистограмма, статистика по окнам, серии; проект LabPlot и CSV; формулы: защита, порядок параметров, свои колонки, подгонка |
+| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области; размер бэга (четыре щелчка, колонки добавляются в таблицу); «Обработка результатов»: загрузка st4, выборка, графики, экспорт; своя колонка, подгонка, лог-ось, настройки в файл и обратно |
 | [test_docs.py](tests/test_docs.py) | описания у всех функций (lib/, main/, tools/, app/); полнота таблиц этого файла |
 | [compare_with_matlab.py](tests/compare_with_matlab.py) | не тест, а отчёт: насколько результаты совпадают с результатами MATLAB |
 
@@ -507,6 +581,10 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
   нужного класса (или в `process_record`), добавить строку в раздел 4 этого файла.
 - **Новая вкладка приложения** — новый файл в [app/](app/) по образцу `RecordsPage`, вкладка добавляется
   в `MainWindow`; расчёты — функциями из `lib/` (окно их не дублирует).
+- **Новый вид графика или статистика в «Обработке результатов»** — функция в
+  [lib/analysis/stats.py](lib/analysis/stats.py) (по образцу `binned`), пункт в `KINDS` или `STATISTICS`
+  и рисование в `AnalysisPage._draw`. Если изменятся итоговые файлы st4 — править только
+  [lib/analysis/dataset.py](lib/analysis/dataset.py).
 - **Новый способ просмотра st1** — короткая оболочка над `RecordPreview` и `ViewDrawer`
   ([lib/st1/preview.py](lib/st1/preview.py)), по образцу `Viewer` ([tools/st1_viewer.py](tools/st1_viewer.py)).
 - **Новая функция в `lib/`** — описание в коде и строка в разделе 3; `test_docs.py` напомнит, если забыть.

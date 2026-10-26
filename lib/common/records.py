@@ -6,7 +6,9 @@
     cond_num                          — номер условий (для выбора записей, CONDITIONS в settings);
     start_frame, fin_frame            — диапазон кадров (номера файлов, с 1), нужен st1;
     rim или rim_new                   — порог площади рима и крупных брызг, px² (st1);
-    cx или c_x, cy или c_y            — начало координат для st4, px.
+    cx или c_x, cy или c_y            — начало координат для st4, px;
+    bag_hight, bag_length, bag_frame  — высота и длина бэга, мм, и кадр, на котором они измерены
+                                        (заполняет приложение; стадиям не нужны).
 Строки без rec_name или images_path_side пропускаются.
 
 Путь записи: images_path_side, а если он не оканчивается именем записи — images_path_side\\rec_name.
@@ -39,6 +41,9 @@ COLUMN_NAMES = {
     "rim": ("rim_new", "rim"),
     "cx": ("cx", "c_x"),
     "cy": ("cy", "c_y"),
+    "bag_height": ("bag_hight", "bag_height"),  # размер бэга (приложение, стадиям не нужен)
+    "bag_length": ("bag_length",),
+    "bag_frame": ("bag_frame",),
 }
 REQUIRED_COLUMNS = ("rec_name", "images_path_side")
 

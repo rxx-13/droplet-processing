@@ -35,6 +35,7 @@ pg.setConfigOptions(imageAxisOrder="row-major")  # массив кадра — (
 PIV_VIEWS = {"piv", "piv_matlab"}  # виды, которым нужен PIV (расчёт пары кадров)
 BACKGROUND = "#202020"  # фон вокруг кадра
 ERASED_RGBA = (*QColor(ERASED_COLOR).getRgb()[:3], 90)  # подсветка закрашенного, прозрачность ~0.35
+BAG_COLOR = "#ff3df0"  # разметка размера бэга
 MAX_RESULTS = 250  # больше посчитанных кадров не хранить (память): дальние от текущего забываются
 
 
@@ -217,7 +218,7 @@ def _levels(picture: np.ndarray) -> tuple[float, float]:
 
 
 class FrameView(pg.GraphicsLayoutWidget):
-    """Кадр с наложениями (виды 1–5) и крестиком «центра затравки».
+    """Кадр с наложениями (виды 1–5), крестиком «центра затравки» и разметкой размера бэга.
 
     clicked(x, y) — щелчок левой кнопкой по кадру, координаты в пикселях с 1 (дробные).
     """
@@ -241,10 +242,17 @@ class FrameView(pg.GraphicsLayoutWidget):
         self.droplet_arrows = pg.PlotCurveItem(pen=pg.mkPen("b", width=1.2))
         self.center = pg.ScatterPlotItem(pxMode=True, symbol="+", size=28, pen=pg.mkPen("#000000", width=1),
                                          brush=pg.mkBrush("#ffb000"))
+        self.bag_lines = pg.PlotCurveItem(pen=pg.mkPen(BAG_COLOR, width=2))  # высота и длина бэга
+        self.bag_points = pg.ScatterPlotItem(pxMode=True, symbol="o", size=8, pen=pg.mkPen("#000000", width=1),
+                                             brush=pg.mkBrush(BAG_COLOR))
         for z, item in enumerate((self.image, self.speed, self.erased, self.arrows, self.droplet_arrows,
-                                  self.circles, self.matlab_circles, self.center)):
+                                  self.circles, self.matlab_circles, self.center, self.bag_lines, self.bag_points)):
             item.setZValue(z)
             self.box.addItem(item)
+        self.bag_guide = pg.InfiniteLine(pen=pg.mkPen(BAG_COLOR, width=1, style=Qt.PenStyle.DashLine))
+        self.bag_guide.setZValue(20)
+        self.bag_guide.setVisible(False)
+        self.box.addItem(self.bag_guide, ignoreBounds=True)  # направляющая не влияет на «весь кадр»
         self.colorbar: pg.ColorBarItem | None = None
         self.colorbar_shown = False
         self.frame_size: tuple[int, int] | None = None  # (высота, ширина) показанного кадра
@@ -371,6 +379,7 @@ class FrameView(pg.GraphicsLayoutWidget):
         self._clear()
         self.image.setVisible(False)
         self.center.clear()
+        self.set_bag([])
 
     def set_center(self, x: float | None, y: float | None) -> None:
         """Крестик «центра затравки» в точке (x, y), px с 1; None — убрать."""
@@ -378,6 +387,21 @@ class FrameView(pg.GraphicsLayoutWidget):
             self.center.clear()
         else:
             self.center.setData([x], [y])
+
+    def set_bag(self, points: list[tuple[float, float]], guide: tuple[str, float] | None = None) -> None:
+        """Разметка бэга: points — поставленные точки (до четырёх, px с 1), отрезки 1–2 (высота) и 3–4 (длина);
+        guide — направляющая для следующей точки: ("vertical", x) или ("horizontal", y); None — без неё."""
+        self.bag_points.setData([p[0] for p in points], [p[1] for p in points])
+        pairs = points[: len(points) // 2 * 2]
+        self.bag_lines.setData(np.array([p[0] for p in pairs], dtype=float), np.array([p[1] for p in pairs], dtype=float),
+                               connect="pairs")
+        if guide is None:
+            self.bag_guide.setVisible(False)
+        else:
+            direction, value = guide
+            self.bag_guide.setAngle(90 if direction == "vertical" else 0)
+            self.bag_guide.setPos(QPointF(value, 0) if direction == "vertical" else QPointF(0, value))
+            self.bag_guide.setVisible(True)
 
     def fit(self) -> None:
         """Показать кадр целиком."""

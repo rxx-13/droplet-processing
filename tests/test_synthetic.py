@@ -12,6 +12,7 @@ r"""Проверка физики на искусственной съёмке: 
 """
 
 import importlib.util
+import json
 import os
 import shutil
 import time
@@ -259,11 +260,24 @@ def test_app_opens_records_shows_every_view_and_saves_the_table(run, tmp_path):
     page.view.clicked.emit(100.4, 200.6)  # щелчок по кадру в режиме «центр затравки»
     assert not page.center_button.isChecked() and window.windowTitle().endswith("*")
 
+    page.bag_button.click()  # «Размер бэга»: Esc после первой точки — разметка отменяется
+    page.view.clicked.emit(100.0, 50.0)
+    page._cancel_marking()
+    assert not page.bag_points and page.table.column("bag_length") is None
+    page.bag_button.click()  # четыре точки: вторая — на вертикали первой, четвёртая — на горизонтали третьей
+    for x, y in ((100.0, 50.0), (130.7, 90.0), (90.0, 200.0), (150.0, 210.3)):
+        page.view.clicked.emit(x, y)
+    assert not page.bag_button.isChecked() and "бэг: высота 2 мм, длина 3 мм (кадр 12)" in page.info.text()
+
     assert window.save() and not page.has_changes
     rec1, rec2 = read_records(table)
     assert (rec2.start_frame, rec2.fin_frame, rec2.rim, rec2.cx, rec2.cy) == (3, 12, 5000, 100, 201)
     assert rec1 == read_records(Path(run.settings.TABLE_FILE))[0]  # rec1 не тронута
     assert list((tmp_path / "out" / "table_backups").glob("table *.xlsx"))  # копия таблицы до записи
+    sheet = load_workbook(table).active  # колонки бэга добавлены: 40 px и 60 px × 0.05 мм/px, кадр 12
+    headers = [c.value for c in sheet[1]]
+    assert headers[-3:] == ["bag_hight", "bag_length", "bag_frame"] and sheet.cell(2, len(headers)).value
+    assert [sheet.cell(4, len(headers) - k).value for k in (2, 1, 0)] == [2, 3, 12]
     window.close()
 
 
@@ -407,3 +421,67 @@ def test_app_shows_saved_st1_results_without_recomputing(run):
     page.go(3)
     assert page.info.text().startswith("капель: Python 15") and page.computer.results
     window.close()
+
+
+def test_results_processing_loads_st4_selects_plots_and_exports(run, tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.analysis_page import AnalysisPage
+    from lib.analysis.dataset import Source, load
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    source = Source("synth", "Python", Path(run.settings.TABLE_FILE), run.out)
+    tracks, problems = load([source], "tracks")
+    dats = [files.load_dat(p) for p in run.st4.glob("visota*.dat")]
+    assert not problems and len(tracks) == sum(d.shape[0] for d in dats if d.shape[1] == 5)
+    assert set(tracks.columns["record"]) == {"rec1"} and np.all(tracks.columns["cond_num"] == 1)
+    v_true = np.hypot(VELOCITY[0], VELOCITY[1]) * SCALE / 1000 * FPS
+    assert np.allclose(np.median(tracks.columns["v"]), v_true, rtol=0.05)  # |v| в м/с
+    areas, _ = load([source], "areas")
+    assert len(areas) == 3 and np.all(areas.columns["tracks"] >= 5)
+
+    experiment = tmp_path / "experiments" / "synth"  # эксперимент в отдельной папке, как experiments/<имя>
+    experiment.mkdir(parents=True)
+    _module_file(experiment / "settings.py", vars(run.settings))
+    page = AnalysisPage(tmp_path / "experiments")
+    page.set_checked(["synth — результаты Python"])
+    page.load_data()
+    assert len(page.data) == len(tracks) and "Загружено строк" in page.data_info.text()
+    page.kind.setCurrentIndex(page.kind.findData("binned"))  # |v| по окнам r
+    page.replot()
+    assert page.series and np.nansum(page.series[0].count) == len(tracks)
+    row = page.add_condition()  # выборка: одна область
+    row.column.setCurrentIndex(row.column.findText("area_low_edge"))
+    row.select_values([row.values.item(0).text()])
+    page.series_by.setCurrentIndex(page.series_by.findData("record"))
+    page.replot()
+    assert 0 < len(page.selection) < len(tracks) and page.series[0].label == "record = rec1"
+    page.kind.setCurrentIndex(page.kind.findData("histogram"))
+    page.replot()
+    assert np.sum(page.series[0].count) == len(page.selection)
+    page.columns_text.setPlainText("speed2 = 2*v")  # своя колонка — сразу в списках колонок
+    page.replot()
+    assert page.x_column.findData("speed2") >= 0 and not page.columns_info.text()
+    page.kind.setCurrentIndex(page.kind.findData("binned"))
+    page.x_column.setCurrentIndex(page.x_column.findData("x"))
+    page.y_column.setCurrentIndex(page.y_column.findData("speed2"))
+    page.curve_formula.setText("a + b*x")  # своя кривая: подогнать прямую к |v|(x)
+    page.curve_mode.setCurrentIndex(page.curve_mode.findData("fit"))
+    page.log_y.setChecked(True)
+    page.y_from.setText("0.1")
+    page.replot()
+    (name, result), = page.fits
+    v_true = 2 * np.hypot(VELOCITY[0], VELOCITY[1]) * SCALE / 1000 * FPS
+    assert result.ok and np.isclose(result.values["a"], v_true, rtol=0.05) and abs(result.values["b"]) < 0.01
+    assert "R²" in page.fit_info.text() and page.figure.axes[0].get_yscale() == "log"
+
+    page.export(tmp_path / "selection.csv", "selection")
+    page.export(tmp_path / "series.csv", "series")
+    page.export(tmp_path / "project.lml", "labplot")
+    assert all((tmp_path / name).stat().st_size > 0 for name in ("selection.csv", "series.csv", "project.lml"))
+
+    again = AnalysisPage(tmp_path / "experiments")  # настройки — в файл и обратно: та же картинка
+    again.set_state(json.loads(json.dumps(page.state())))
+    assert len(again.selection) == len(page.selection) and len(again.series) == len(page.series)
+    assert np.allclose(again.fits[0][1].values["a"], result.values["a"])

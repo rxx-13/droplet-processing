@@ -6,7 +6,9 @@
 
 Правки копятся в памяти (EditableTable.set) и попадают в файл только по EditableTable.save: книга
 открывается заново, меняются только изменённые ячейки, остальное (другие ячейки, форматирование, условное
-форматирование, ширина колонок) остаётся как было. Перед записью проверяется, что в строке та же запись
+форматирование, ширина колонок) остаётся как было. Колонку, которой в таблице нет (например, bag_length),
+можно добавить (EditableTable.add_column): при записи её заголовок и описание встают в первую свободную
+колонку. Перед записью проверяется, что в строке та же запись
 (rec_name) — на случай, если таблицу тем временем правили в Excel. Если файл открыт в Excel, он не
 трогается, а возникает TableSaveError с понятным текстом.
 
@@ -89,16 +91,27 @@ def read_table(path: Path) -> tuple[list[str], dict[str, str], list[TableRow]]:
     return headers, descriptions, data
 
 
-def save_cells(path: Path, cells: dict[tuple[int, str], Any], names: dict[int, str], name_header: str) -> None:
+def save_cells(path: Path, cells: dict[tuple[int, str], Any], names: dict[int, str], name_header: str,
+               new_columns: dict[str, str] | None = None) -> None:
     """Записать ячейки {(строка Excel, заголовок): значение} в первый лист файла, остальное не трогая.
 
     names — {строка Excel: rec_name, который должен в ней стоять}; не совпало — TableSaveError.
-    Книга сначала собирается в памяти и только потом пишется в файл одним разом: если файл открыт
-    в Excel, он остаётся прежним.
+    new_columns — {заголовок: описание} колонок, которых в файле нет: заголовок встаёт в строку 1 первой
+    свободной колонки, описание — в строку 2. Книга сначала собирается в памяти и только потом пишется
+    в файл одним разом: если файл открыт в Excel, он остаётся прежним.
     """
     workbook = load_workbook(path)
     sheet = workbook.worksheets[0]
     headers = [_text(c.value) for c in sheet[1]]
+    for header, description in (new_columns or {}).items():
+        if header in headers:
+            continue
+        column = max((i + 1 for i, h in enumerate(headers) if h), default=0) + 1  # после последнего заголовка
+        sheet.cell(1, column).value = header
+        if not _text(sheet.cell(2, column).value):
+            sheet.cell(2, column).value = description
+        headers += [""] * (column - len(headers))
+        headers[column - 1] = header
     for header in {name_header, *(h for _, h in cells)}:
         if header not in headers:
             raise TableSaveError(f"В таблице {path.name} больше нет колонки {header}")
@@ -133,6 +146,7 @@ class EditableTable:
         self.path = Path(path)
         self.headers, self.descriptions, self.rows = read_table(self.path)
         self.changes: dict[tuple[int, str], Any] = {}
+        self.new_columns: dict[str, str] = {}  # добавленные колонки, которых ещё нет в файле: заголовок -> описание
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -141,6 +155,13 @@ class EditableTable:
     def column(self, key: str) -> str | None:
         """Заголовок колонки величины key из COLUMN_NAMES (например, "rim" -> "rim" или "rim_new")."""
         return next((h for h in COLUMN_NAMES[key] if h in self.headers), None)
+
+    def add_column(self, header: str, description: str) -> None:
+        """Добавить колонку, которой нет в таблице (в файл она попадёт при save, если в ней есть значения)."""
+        if header not in self.headers:
+            self.headers.append(header)
+            self.descriptions[header] = description
+            self.new_columns[header] = description
 
     def original(self, i: int, header: str) -> Any:
         """Значение ячейки в файле (без правок)."""
@@ -275,7 +296,8 @@ class EditableTable:
         name_header = self.column("rec_name")
         cells = {(self.rows[i].excel_row, header): value for (i, header), value in self.changes.items()}
         names = {self.rows[i].excel_row: _text(self.original(i, name_header)) for i, _ in self.changes}
-        save_cells(self.path, cells, names, name_header)
+        used = {header for _, header in self.changes}
+        save_cells(self.path, cells, names, name_header, {h: d for h, d in self.new_columns.items() if h in used})
         self.headers, self.descriptions, self.rows = read_table(self.path)
-        self.changes = {}
+        self.changes, self.new_columns = {}, {}
         return backup

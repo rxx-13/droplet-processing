@@ -1,4 +1,8 @@
-"""Главное окно приложения: выбор эксперимента, вкладки, строка состояния.
+"""Главное окно приложения: две большие части — «Обработка измерений» и «Обработка результатов».
+
+«Обработка измерений» — работа с одним экспериментом: вверху выбор эксперимента, «Сделать текущим»,
+«Сохранить», «Перечитать», ниже вкладки «Записи», «Запуск», «Результаты». «Обработка результатов»
+(app/analysis_page.py) — распределения по результатам любых экспериментов, от выбранного здесь не зависит.
 
 Эксперимент при запуске — из experiments/current.py. Другой можно выбрать в списке вверху окна: это меняет
 эксперимент только в окне; «Сделать текущим» записывает выбранный в experiments/current.py (тогда его же
@@ -15,8 +19,9 @@ from pathlib import Path
 from types import ModuleType
 
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
-from PySide6.QtWidgets import QComboBox, QLabel, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtWidgets import QComboBox, QLabel, QMainWindow, QMessageBox, QTabWidget, QToolBar, QVBoxLayout, QWidget
 
+from app.analysis_page import AnalysisPage
 from app.jobs_page import JobsPage
 from app.records_page import RecordsPage
 from app.results_page import ResultsPage
@@ -43,18 +48,18 @@ def experiment_name(settings: ModuleType) -> str:
 
 class MainWindow(QMainWindow):
     """Главное окно. settings, thresholds — модули эксперимента (по умолчанию — из experiments/current.py);
-    workers — число фоновых процессов расчёта кадров (по умолчанию все ядра, кроме одного; 0 — без них)."""
+    workers — число фоновых процессов расчёта кадров (по умолчанию все ядра, кроме одного; 0 — без них);
+    experiments_dir — папка экспериментов для «Обработки результатов» (по умолчанию experiments/)."""
 
     def __init__(self, settings: ModuleType | None = None, thresholds: ModuleType | None = None,
-                 workers: int | None = None) -> None:
+                 workers: int | None = None, experiments_dir: Path | None = None) -> None:
         super().__init__()
         if settings is None or thresholds is None:
             from experiments.current import settings, thresholds
         self.settings, self.thresholds = settings, thresholds
         self.resize(1700, 960)
 
-        toolbar = self.addToolBar("Главная")
-        toolbar.setMovable(False)
+        toolbar = QToolBar("Эксперимент")  # относится только к «Обработке измерений» (Ctrl+S, F5 — тоже)
         toolbar.addWidget(QLabel("  Эксперимент: "))
         self.experiment = QComboBox()
         name = experiment_name(settings)
@@ -91,7 +96,19 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.jobs, "Запуск")
         self.tabs.addTab(self.results, "Результаты")
         self.tabs.currentChanged.connect(self._tab_changed)
-        self.setCentralWidget(self.tabs)
+        measurements = QWidget()
+        column = QVBoxLayout(measurements)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(toolbar)
+        column.addWidget(self.tabs)
+        self.analysis = AnalysisPage(experiments_dir or ROOT / "experiments")
+        self.analysis.message.connect(lambda text: self.statusBar().showMessage(text, STATUS_MS))
+        self.parts = QTabWidget()
+        self.parts.addTab(measurements, "Обработка измерений")
+        self.parts.addTab(self.analysis, "Обработка результатов")
+        self.parts.tabBar().setStyleSheet("QTabBar::tab { font-size: 11pt; font-weight: bold; padding: 6px 24px; }")
+        self.setCentralWidget(self.parts)
         self._update_title()
 
     @property

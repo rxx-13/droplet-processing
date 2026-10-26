@@ -5,8 +5,10 @@
 правки — «*». Можно выделить несколько записей (Ctrl, Shift) — тогда правка поля применяется ко всем.
 
 В середине — все кадры записи (не только диапазон) в одном из видов 1–5 (app/frame_view.py), шкала кадров
-с подсветкой диапазона, кнопки «Начало = этот кадр», «Конец = этот кадр» и «Центр затравки» (щелчок по
-кадру -> c_x, c_y, px с 1). Номер кадра — номер файла записи, как start_frame и fin_frame в таблице.
+с подсветкой диапазона, кнопки «Начало = этот кадр», «Конец = этот кадр», «Центр затравки» (щелчок по
+кадру -> c_x, c_y, px с 1) и «Размер бэга» (четыре щелчка: две точки по вертикали — высота, две по
+горизонтали — длина; -> bag_hight, bag_length, мм, и bag_frame — номер кадра; недостающие колонки таблицы
+добавляются). Номер кадра — номер файла записи, как start_frame и fin_frame в таблице.
 «Капли и PIV» (рядом с видами): «считать с текущими настройками» — кадры считаются заново (видно, что дадут
 текущие rim и пороги); «взять из результатов st1» — виды 3–5 показывают сохранённое последним запуском st1
 (SavedResults из lib/st1/preview.py, мгновенно; вид 2 считается всегда — его в результатах нет).
@@ -45,13 +47,19 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
 from app.frame_view import PIV_VIEWS, FrameComputer, FrameScale, FrameView
 from app.params_page import CHANGED_STYLE, INVALID_STYLE, ParamsPanel
 from lib.common import files
-from lib.common.records import Record
+from lib.common.records import COLUMN_NAMES, Record
 from lib.common.table_edit import EditableTable, TableSaveError, format_value, same_value
 from lib.st1.preview import COMPUTED_VIEWS, VIEWS, FrameResult, SavedResults
 
 log = logging.getLogger(__name__)
 
 VIEW_KEYS = {"1": "frame", "2": "clean", "3": "droplets", "4": "piv", "5": "piv_matlab"}
+BAG_COLUMNS = {"bag_height": "высота бэга, мм", "bag_length": "длина бэга, мм",
+               "bag_frame": "номер кадра (файла), на котором измерен бэг"}  # описания добавляемых колонок
+BAG_STEPS = ("щёлкните низ или верх бэга",
+             "щёлкните другой край бэга по высоте (точка встанет на ту же вертикаль)",
+             "щёлкните край бэга по длине",
+             "щёлкните другой край бэга по длине (точка встанет на ту же горизонталь)")
 SAVED_VIEWS = {"droplets", "piv", "piv_matlab"}  # виды, которые можно взять из результатов st1
 VIEW_BUTTONS = {"frame": "1 кадр", "clean": "2 без рима", "droplets": "3 капли", "piv": "4 PIV",
                 "piv_matlab": "5 PIV как в MATLAB"}
@@ -132,6 +140,7 @@ class RecordsPage(QWidget):
         self.show_matlab = True
         self.matlab: tuple[list[np.ndarray], list[np.ndarray]] | None = None  # капли MATLAB по кадрам диапазона
         self.can_compute = False  # заданы кадры и rim (без них виды 2–5 не считаются)
+        self.bag_points: list[tuple[float, float]] = []  # точки разметки бэга (до четырёх), px с 1
         self.source = "compute"  # капли и PIV: "compute" — считать, "file" — из результатов st1
         self.saved: SavedResults | None = None  # результаты st1 текущей записи (читаются при первом показе)
         self.saved_key: tuple | None = None  # (файл, время записи) прочитанных результатов
@@ -213,6 +222,10 @@ class RecordsPage(QWidget):
         self.center_button = button("Центр затравки", None, "Нажать, затем щёлкнуть по кадру — c_x, c_y "
                                     "выделенных записей (Esc — отмена)", checkable=True)
         self.center_button.toggled.connect(self._center_mode)
+        self.bag_button = button("Размер бэга", None, "Нажать и щёлкнуть по кадру четыре точки: две по вертикали — "
+                                 "высота бэга,\nдве по горизонтали — длина (Esc — отмена). Сохраняется в bag_hight, "
+                                 "bag_length (мм) и bag_frame (кадр)", checkable=True)
+        self.bag_button.toggled.connect(self._bag_mode)
         navigation = QHBoxLayout()
         for text, slot, tip in (("⏮", lambda: self.go(1), "первый файл (Home)"),
                                 ("◀", lambda: self.step(-1), "предыдущий кадр (←)")):
@@ -223,7 +236,7 @@ class RecordsPage(QWidget):
             navigation.addWidget(button(text, slot, tip))
         navigation.addWidget(self.frame_label)
         navigation.addStretch(1)
-        for b in (self.start_button, self.fin_button, self.center_button):
+        for b in (self.start_button, self.fin_button, self.center_button, self.bag_button):
             navigation.addWidget(b)
 
         views = QHBoxLayout()
@@ -320,7 +333,7 @@ class RecordsPage(QWidget):
         keys = {"Right": lambda: self.step(1), "Left": lambda: self.step(-1), "Space": self.toggle_slideshow,
                 "Home": lambda: self.go(1), "End": lambda: self.go(self.count),
                 "PgDown": lambda: self.switch_record(1), "PgUp": lambda: self.switch_record(-1),
-                "M": lambda: self.matlab_box.toggle(), "Esc": lambda: self.center_button.setChecked(False)}
+                "M": lambda: self.matlab_box.toggle(), "Esc": self._cancel_marking}
         keys.update({key: (lambda v=view: self.set_view(v)) for key, view in VIEW_KEYS.items()})
         for key, slot in keys.items():
             QShortcut(QKeySequence(key), self).activated.connect(slot)
@@ -493,6 +506,7 @@ class RecordsPage(QWidget):
         if backup is not None:
             self.backed_up.add(path)
         rows = len(self.table)
+        self._build_form()  # в таблице могли появиться новые колонки
         self._fill_list()
         if self.i >= rows:
             self._select(rows - 1)
@@ -543,6 +557,7 @@ class RecordsPage(QWidget):
             b.setEnabled(frames_ok and single and self.table.column(key) is not None)
         self.center_button.setEnabled(frames_ok and self.table.column("cx") is not None
                                       and self.table.column("cy") is not None)
+        self.bag_button.setEnabled(frames_ok and single)
         self.like_button.setEnabled(bool(rows))
         self._update_counts()
 
@@ -651,14 +666,77 @@ class RecordsPage(QWidget):
         if record and record.start_frame and record.fin_frame and record.fin_frame < record.start_frame:
             self.message.emit("Внимание: начало диапазона позже конца")
 
+    def _cancel_marking(self) -> None:
+        """Esc: отменить «центр затравки» и «размер бэга»."""
+        self.center_button.setChecked(False)
+        self.bag_button.setChecked(False)
+
     def _center_mode(self, on: bool) -> None:
         """Режим «центр затравки»: курсор-крестик; следующий щелчок по кадру задаёт c_x, c_y."""
-        self.view.viewport().setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
         if on:
+            self.bag_button.setChecked(False)
             self.message.emit("Щёлкните по кадру в центре затравки (Esc — отмена)")
+        self.view.viewport().setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
+
+    def _bag_mode(self, on: bool) -> None:
+        """Режим «размер бэга»: четыре щелчка по кадру; выключение до четвёртой точки — отмена разметки."""
+        if on:
+            self.center_button.setChecked(False)
+            self.bag_points = []
+            self.view.set_bag([])
+            self.message.emit(f"Размер бэга, точка 1 из 4: {BAG_STEPS[0]} (Esc — отмена)")
+        elif len(self.bag_points) < 4:
+            self.bag_points = []
+            self.view.set_bag([])
+        self.view.viewport().setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
+
+    def _bag_click(self, x: float, y: float) -> None:
+        """Очередная точка разметки бэга: вторая — на вертикали первой, четвёртая — на горизонтали третьей.
+        После четвёртой — высота и длина в мм и номер кадра в таблицу (недостающие колонки добавляются)."""
+        points = self.bag_points
+        if len(points) == 1:
+            x = points[0][0]
+        elif len(points) == 3:
+            y = points[2][1]
+        points.append((x, y))
+        n = len(points)
+        guide = ("vertical", points[0][0]) if n == 1 else ("horizontal", y) if n == 3 else None
+        self.view.set_bag(points, guide)
+        scale = self.settings.SCALE_MM_PER_PX
+        if n < 4:
+            done = f"высота {abs(points[1][1] - points[0][1]) * scale:.2f} мм; " if n >= 2 else ""
+            self.message.emit(f"Размер бэга, точка {n + 1} из 4: {done}{BAG_STEPS[n]} (Esc — отмена)")
+            return
+        values = {"bag_height": round(abs(points[1][1] - points[0][1]) * scale, 2),
+                  "bag_length": round(abs(points[3][0] - points[2][0]) * scale, 2), "bag_frame": self.number}
+        missing = [key for key in values if self.table.column(key) is None]
+        for key in missing:  # колонки, которых в таблице нет, появятся при сохранении
+            self.table.add_column(COLUMN_NAMES[key][0], BAG_COLUMNS[key])
+        if missing:
+            self._build_form()
+            self._fill_form()
+        for key, value in values.items():
+            self.set_value(self.table.column(key), value, [self.i])
+        self.bag_button.setChecked(False)
+        self.draw()  # подпись «бэг: …» над кадром
+        self.message.emit(f"Бэг: высота {values['bag_height']} мм, длина {values['bag_length']} мм (кадр {self.number}) "
+                          "— в таблицу по «Сохранить» (Ctrl+S)")
+
+    def _bag_text(self) -> str:
+        """Подпись размера бэга текущей записи из таблицы («» — не измерен)."""
+        height, length, frame = (self.table.value(self.i, c) if c else None
+                                 for c in (self.table.column(key) for key in BAG_COLUMNS))
+        if height is None and length is None:
+            return ""
+        text = f"бэг: высота {format_value(height) or '—'} мм, длина {format_value(length) or '—'} мм"
+        return text + (f" (кадр {format_value(frame)})" if frame is not None else "")
 
     def _frame_clicked(self, x: float, y: float) -> None:
-        """Щелчок по кадру: в режиме «центр затравки» — c_x, c_y выделенных записей (px с 1, целые)."""
+        """Щелчок по кадру: в режиме «размер бэга» — очередная точка; в режиме «центр затравки» — c_x, c_y
+        выделенных записей (px с 1, целые)."""
+        if self.bag_button.isChecked():
+            self._bag_click(x, y)
+            return
         if not self.center_button.isChecked():
             return
         cx, cy = round(x), round(y)
@@ -680,6 +758,9 @@ class RecordsPage(QWidget):
         self.i = i
         self.frames, self.frames_error, self.matlab = None, "", None
         self.saved, self.saved_key = None, None
+        self.bag_button.setChecked(False)
+        self.bag_points = []
+        self.view.set_bag([])
         self.frame_cache.clear()
         record = self.table.record(i)
         if record is None:
@@ -789,7 +870,8 @@ class RecordsPage(QWidget):
         self.view.set_center(record.cx, record.cy)
         self.title.setText(f"{record.name} — кадр {self.number} из {self.count} "
                            f"(файл {self.frames.paths[self.number - 1].name}) — {VIEWS[view]}")
-        self._set_info(text, error)
+        bag = self._bag_text()
+        self._set_info(f"{text} — {bag}" if text and bag else text or bag, error)
         self._update_scale()
 
     def _set_info(self, text: str, error: bool = False) -> None:
