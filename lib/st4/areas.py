@@ -104,12 +104,19 @@ def area_file_name(height_mm: float, low_edge_mm: float) -> str:
 
 # ------------------------------------------------------------------ график
 
+AREA_GREEN = "#00b400"  # средние положения и скорости: зелёный ярче, чем "g" у matplotlib (у MATLAB "g" — ярко-зелёный)
+
 
 def draw_area(top: Axes, bottom: Axes, tracks: list[np.ndarray], inside: list[np.ndarray], means: np.ndarray,
               area: Area, scale: float, cx: float, cy: float, arrow_scale: float,
               y_limits_mm: tuple[float, float]) -> None:
     """Область на двух осях: top — траектории (части в области — красным), bottom — средние
-    положения и скорости (зелёные точки и стрелки). Оси — мм."""
+    положения и скорости (зелёные точки и стрелки длиной смещение за кадр × arrow_scale). Оси — мм.
+
+    Что рисуется — как в MATLAB (st4_…_v1_function2.m); толщины линий и размер точек подобраны так, чтобы
+    картинка выглядела как у MATLAB: у него рисунок крупнее, точка '.' втрое меньше заданного размера,
+    траектории — линии толщиной 0.5.
+    """
     full, parts = [], []
     for track, mask in zip(tracks, inside):
         if track.shape[0] < 2:
@@ -119,25 +126,25 @@ def draw_area(top: Axes, bottom: Axes, tracks: list[np.ndarray], inside: list[np
         if mask.any():
             parts.append(xy[mask])
     for ax in (top, bottom):
-        ax.add_collection(LineCollection(full, colors="k", linewidths=1.0))
-    top.add_collection(LineCollection(parts, colors="r", linewidths=1.0))
+        ax.add_collection(LineCollection(full, colors="k", linewidths=0.5))
+    top.add_collection(LineCollection(parts, colors="r", linewidths=0.7))
 
     for i in range(means.shape[0]):
         dx, dy = means[i, 2], -means[i, 3]
         if dx < 0 and dy < 0:  # как в MATLAB: летящие влево-вниз не рисуются
             continue
         x, y = px_to_mm(means[i : i + 1, 0:2], scale, cx, cy)[0]
-        bottom.plot(x, y, ".g", markersize=20)
-        bottom.plot([x, x + dx * arrow_scale], [y, y + dy * arrow_scale], "-g", linewidth=2)
+        bottom.plot(x, y, "o", color=AREA_GREEN, markersize=4, markeredgewidth=0)
+        bottom.plot([x, x + dx * arrow_scale], [y, y + dy * arrow_scale], "-", color=AREA_GREEN, linewidth=1.0)
 
     corners = px_to_mm(np.column_stack([area.x, area.y]), scale, cx, cy)
     xs, ys = corners[:, 0], corners[:, 1]
     for ax in (top, bottom):
         for xx in xs:
-            ax.plot([xx, xx], [ys[0], ys[1]], "r")
+            ax.plot([xx, xx], [ys[0], ys[1]], "r", linewidth=1.0)
         for yy in ys:
-            ax.plot([xs[0], xs[1]], [yy, yy], "r")
-        ax.set_aspect("equal")
+            ax.plot([xs[0], xs[1]], [yy, yy], "r", linewidth=1.0)
+        ax.set_aspect("equal", adjustable="datalim")  # как axis equal в MATLAB: оси во всю ширину, шире пределы x
         ax.set_xlabel("x, mm", fontsize=18)
         ax.set_ylabel("y, mm", fontsize=18)
         ax.set_ylim(*y_limits_mm)
@@ -146,8 +153,8 @@ def draw_area(top: Axes, bottom: Axes, tracks: list[np.ndarray], inside: list[np
 
 def plot_area(path: Path, tracks: list[np.ndarray], inside: list[np.ndarray], means: np.ndarray, area: Area,
               scale: float, cx: float, cy: float, arrow_scale: float, y_limits_mm: tuple[float, float]) -> None:
-    """Картинка области (draw_area) в файл, 2400×1800 px."""
-    fig = Figure(figsize=(12, 9))
+    """Картинка области (draw_area) в файл, 3000×1600 px (пропорции — как у картинки MATLAB)."""
+    fig = Figure(figsize=(15, 8))
     top, bottom = fig.subplots(2, 1)
     draw_area(top, bottom, tracks, inside, means, area, scale, cx, cy, arrow_scale, y_limits_mm)
     fig.savefig(path, dpi=200)
