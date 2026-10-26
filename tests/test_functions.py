@@ -183,6 +183,13 @@ def test_settings_file_writes_only_changed_values_and_keeps_comments(tmp_path):
     assert path.read_bytes() == expected.encode("utf-8")  # всё остальное — байт в байт
     assert f.value("CANNY_THRESHOLD") == 1e-7 and not f.edits
 
+    f.set_text("CANNY_THRESHOLD", "0.2")
+    outside = "# дописали в редакторе\r\n".encode("utf-8")
+    path.write_bytes(path.read_bytes() + outside)  # файл изменили снаружи
+    with pytest.raises(ValueError, match="изменили снаружи"):
+        f.save()  # чужая правка не затирается
+    assert path.read_bytes().endswith(outside) and f.edits
+
 
 def test_current_experiment_is_switched_in_current_py(tmp_path):
     path = tmp_path / "current.py"

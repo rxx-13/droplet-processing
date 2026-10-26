@@ -131,6 +131,7 @@ run.py → MainWindow (window.py)                  выбор экспериме
 │   │     compute_frame (lib/st1/preview.py)     st1 для одного кадра — тот же, что у окна просмотра
 │   ├─ FrameView (frame_view.py)                 показ видов 1–5 (pyqtgraph), щелчок по кадру (центр затравки)
 │   ├─ FrameScale (frame_view.py)                шкала кадров с подсветкой диапазона
+│   ├─ SavedResults (lib/st1/preview.py)        «Капли и PIV: взять из результатов st1» — виды 3–5 без пересчёта
 │   └─ ParamsPanel (params_page.py)              панель «Настройки» справа: значения settings.py, thresholds.py
 │         SettingsFile (lib/common/config_edit.py) × 2: правки в памяти; working → расчёт кадра
 │         (apply_parameters); save — только изменённые значения, комментарии остаются
@@ -157,7 +158,7 @@ run.py → MainWindow (window.py)                  выбор экспериме
 | `to_cell` | список → ячейка MATLAB N×1 | main/st1, `save_tracks` | — | cell |
 | `load_cell` | ячейка из .mat → список | `load_particles`, main/st4, `ResultsPage`, tests | — | load |
 | `save_mat` | запись .mat | main/st1, main/st4, `save_tracks` | — | save |
-| `load_particles` | капли из particles.mat по кадрам | main/st2, `RecordPreview._load_matlab`, `RecordsPage`, tests | `load_cell` | — |
+| `load_particles` | капли из particles.mat по кадрам | main/st2, `RecordPreview._load_matlab`, `RecordsPage`, `SavedResults`, tests | `load_cell` | — |
 | `_dat_number` | число в формате %16.7e | `save_dat` | — | — |
 | `save_dat` | таблица в .dat как save -ascii | main/st4 | `_dat_number` | save -ascii |
 | `load_dat` | .dat → таблица | `ResultsPage`, tests | — | load |
@@ -283,13 +284,13 @@ run.py → MainWindow (window.py)                  выбор экспериме
 
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
-| `PivGrid` | узлы сетки PIV | `Piv` | — | PIV_Grid |
+| `PivGrid` | узлы сетки PIV | `Piv`, `_load_piv` | — | PIV_Grid |
 | `PivGrid.regular` | регулярная сетка с шагом | `Piv` | — | PIV_Grid(0:step:W, 0:step:H) |
 | `PivGrid.shape` | (nx, ny) | `Piv.compute` | — | — |
 | `PivGrid.x_mat` | x узлов, (nx, ny) | `velocity_at_points`, `ViewDrawer.show`, `FrameView.show`, `PivGrid.to_struct` | — | xMat |
 | `PivGrid.y_mat` | y узлов, (nx, ny) | `velocity_at_points`, `ViewDrawer.show`, `FrameView.show`, `PivGrid.to_struct` | — | yMat |
 | `PivGrid.to_struct` | поля PIV_Grid для .mat | `Piv` | — | — |
-| `PivResult` | результат PIV пары кадров | `Piv.compute`, `filter_piv` | — | PIV_output |
+| `PivResult` | результат PIV пары кадров | `Piv.compute`, `filter_piv`, `_load_piv` | — | PIV_output |
 | `PivResult.to_struct` | структура PIV_output для .mat | main/st1 | — | — |
 | `Piv` | PIV на сетке | main/st1, `compute_frame` | `PivGrid` | myf_DoCC8_multimax |
 | `Piv.from_thresholds` | создать из thresholds | main/st1, `compute_frame` | — | PIV_params |
@@ -317,11 +318,14 @@ run.py → MainWindow (window.py)                  выбор экспериме
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
 | `FrameJob` | задание на расчёт одного кадра | `RecordPreview`, `FrameComputer` | — | — |
-| `FrameResult` | результат расчёта кадра | `compute_frame` | — | — |
+| `FrameResult` | результат расчёта кадра | `compute_frame`, `SavedResults.result` | — | — |
 | `FrameResult.erased_mask` | маска закрашенного | `ViewDrawer.show`, `FrameView.show` | — | — |
 | `_frames` | кадры записи, запоминаются в процессе | `compute_frame`, `_background` | `Frames` | — |
 | `_background` | кадр фона, запоминается | `compute_frame` | `_frames` | — |
 | `compute_frame` | st1 для одного кадра | `RecordPreview.result`, `RecordPreview.submit_all`, `FrameComputer` | `RimRemover`, `DropletFinder`, `Piv`, `filter_piv_by_thresholds`, `velocity_at_points` | st1 для кадра |
+| `_load_piv` | PIV после фильтрации из PIV_output_filtered_arr.mat по парам кадров | `SavedResults` | `PivGrid`, `PivResult` | — |
+| `SavedResults` | готовые результаты st1 записи (капли, PIV) — показ без пересчёта | `RecordsPage._saved_at` | `load_particles`, `_load_piv` | — |
+| `SavedResults.result` | кадр диапазона из готовых результатов как `FrameResult` | `RecordsPage._saved_at` | `FrameResult` | — |
 | `RecordPreview` | кадры записи, расчёт по требованию и в фоне | `Viewer`, tests | `Frames`, `FrameJob` | — |
 | `RecordPreview._load_matlab` | капли MATLAB для сравнения | `RecordPreview` | `load_particles` | — |
 | `RecordPreview.frame` | исходный кадр k | `ViewDrawer.show` | `Frames.gray` | — |
@@ -384,7 +388,8 @@ run.py → MainWindow (window.py)                  выбор экспериме
   - [records_page.py](app/records_page.py): `RecordsPage` — вкладка «Записи»: список (`_fill_list`, `_update_row`),
     кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу), поля (`Field`, `_fill_form`, `set_value`,
     `fill_like_previous`; ползунок rim — `rim_to_slider`, `slider_to_rim`), пересчёт после правки rim
-    (`recompute`), правки панели «Настройки» (`apply_parameters`), запись таблицы (`save`);
+    (`recompute`), правки панели «Настройки» (`apply_parameters`), «Капли и PIV»: считать или из результатов
+    st1 (`_source_changed`, `_computes`, `_saved_at`), запись таблицы (`save`);
   - [params_page.py](app/params_page.py): `ParamsPanel` — панель «Настройки» (`load`, `working`, `set_text`,
     `save`, `discard`, поиск — `_filter`); `ParamField` — поле значения с ползунками (`slider_range`,
     `number_text`, `_numbers`);
@@ -489,8 +494,8 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
 
 | Файл | Что проверяет |
 |---|---|
-| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, выбор эксперимента в current.py |
-| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области |
+| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py |
+| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области |
 | [test_docs.py](tests/test_docs.py) | описания у всех функций (lib/, main/, tools/, app/); полнота таблиц этого файла |
 | [compare_with_matlab.py](tests/compare_with_matlab.py) | не тест, а отчёт: насколько результаты совпадают с результатами MATLAB |
 

@@ -18,6 +18,7 @@ RecordPreview и ViewDrawer; сейчас одна — окно tools/st1_viewer
 Расчёт кадра (compute_frame) — та же обработка, что в main/st1_droplets_separation.py, с порогами
 из thresholds.py. Он не зависит от окна, поэтому кадры можно считать заранее в других процессах
 (RecordPreview.submit_all). Координаты на картинках — пиксели с 1, как в MATLAB и в particles.mat.
+Готовые результаты st1 (капли и PIV из файлов, без пересчёта) — SavedResults.
 """
 
 import functools
@@ -34,11 +35,12 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.collections import PatchCollection
 from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.patches import Circle
+from scipy.io import loadmat
 
 from ..common import files
 from ..common.records import Record
 from .droplets import DropletFinder, RimRemover
-from .piv import Piv, PivResult, filter_piv_by_thresholds
+from .piv import Piv, PivGrid, PivResult, filter_piv_by_thresholds
 from .velocity import velocity_at_points
 
 log = logging.getLogger(__name__)
@@ -121,6 +123,57 @@ def compute_frame(job: FrameJob) -> FrameResult:
             xd, yd = velocity_at_points(centers, piv)
     return FrameResult(np.round(clean * 255).astype(np.uint8), np.packbits(erased), clean.shape,
                        centers, radii, piv, job.pair, xd, yd)
+
+
+# ------------------------------------------------------------------ готовые результаты st1
+
+
+def _load_piv(path: Path) -> list[PivResult | None]:
+    """PIV после фильтрации из PIV_output_filtered_arr.mat (результат st1) по парам кадров; пустая ячейка — None."""
+    cell = loadmat(path, squeeze_me=True, struct_as_record=False)["PIV_output_filtered_arr"]
+    found: list[PivResult | None] = []
+    for item in np.atleast_1d(cell):
+        if not hasattr(item, "xdispl"):
+            found.append(None)
+            continue
+        g = item.PIV_params.piv_grid
+        grid = PivGrid(np.atleast_1d(g.xArr).astype(np.float64), np.atleast_1d(g.yArr).astype(np.float64))
+
+        def array(values: Any) -> np.ndarray:
+            return np.asarray(values, dtype=np.float64).reshape(grid.shape)
+
+        found.append(PivResult(array(item.status), array(item.xdispl), array(item.ydispl), array(item.CC_maxValue),
+                               array(item.CC_maxRaitio), array(item.mean_im1), grid, {},
+                               tuple(int(v) for v in np.atleast_1d(item.imSize)), float(item.time_of_iteration)))
+    return found
+
+
+class SavedResults:
+    """Готовые результаты st1 записи — капли и PIV по кадрам диапазона из particles.mat
+    и PIV_output_filtered_arr.mat, чтобы показывать их без пересчёта (виды droplets, piv, piv_matlab).
+
+    st1_dir — папка результата st1 записи (Record.st1_dir). Кадра без рима в результатах нет — вид clean
+    всегда считается. Какими порогами посчитаны результаты, в файлах не записано; modified — когда записан
+    particles.mat (время в секундах, как os.stat).
+    """
+
+    def __init__(self, st1_dir: Path) -> None:
+        self.centers, self.radii, self.xd, self.yd = files.load_particles(st1_dir)
+        self.modified = (st1_dir / "particles.mat").stat().st_mtime
+        piv_path = st1_dir / "PIV_output_filtered_arr.mat"
+        self.piv = _load_piv(piv_path) if piv_path.exists() else []
+
+    def __len__(self) -> int:
+        return len(self.centers)
+
+    def result(self, k: int, first_number: int) -> FrameResult:
+        """Кадр k диапазона (с 1) как FrameResult (без кадра без рима); first_number — номер файла первого
+        кадра диапазона. PIV — пары (k, k+1), у последнего кадра — предыдущей пары, как в st1."""
+        p = min(k, len(self.centers) - 1) - 1  # номер пары PIV, с 0
+        piv = self.piv[p] if 0 <= p < len(self.piv) else None
+        pair = None if piv is None else (first_number + p, first_number + p + 1)
+        return FrameResult(np.zeros((0, 0), dtype=np.uint8), np.packbits(np.zeros(0, dtype=bool)), (0, 0),
+                           self.centers[k - 1], self.radii[k - 1], piv, pair, self.xd[k - 1], self.yd[k - 1])
 
 
 # ------------------------------------------------------------------ данные записи

@@ -149,9 +149,13 @@ class SettingsFile:
 
     def save(self) -> list[str]:
         """Записать правки в файл — меняются только тексты изменённых значений — и перечитать его.
-        Возвращает имена записанных значений."""
+        Возвращает имена записанных значений. Если файл с тех пор, как его прочитали, изменили снаружи
+        (в редакторе, другой программой), он не трогается — ValueError: сначала перечитать (правки останутся)."""
         if not self.edits:
             return []
+        if self.path.read_bytes().decode("utf-8") != self.source:
+            raise ValueError(f"{self.path.name} изменили снаружи после того, как он был прочитан. Нажмите F5 "
+                             "(несохранённые правки останутся) и сохраните ещё раз.")
         lines = self.source.splitlines(keepends=True)
         for name in sorted(self.edits, key=lambda n: self.settings[n].start, reverse=True):
             (first, start), (last, end) = self.settings[name].start, self.settings[name].end

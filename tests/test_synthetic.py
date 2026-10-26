@@ -379,3 +379,31 @@ def test_job_runner_reports_error_and_stops_the_chain(run, tmp_path):
     kinds = [(kind, stage) for _, kind, stage, _ in messages if kind != "log"]
     assert kinds == [("start", "st1"), ("error", "st1")]  # st2 после ошибки st1 не запускается
     assert "Нет папки с кадрами" in messages[-1][3]
+
+
+def test_app_shows_saved_st1_results_without_recomputing(run):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.window import MainWindow
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    window = MainWindow(run.settings, THRESHOLDS, workers=0)  # в OUTPUT_DIR — результаты st1 фикстуры
+    page = window.records
+    page.source_box.setCurrentIndex(page.source_box.findData("file"))  # «взять из результатов st1»
+    page.set_view("droplets")
+    page.go(3)
+    assert page.info.text().startswith("из результатов st1") and "капель: Python 15" in page.info.text()
+    page.set_view("piv")
+    assert "PIV файлов 3→4" in page.info.text()
+    page.set_view("piv_matlab")
+    assert page.info.text().startswith("из результатов st1")
+    assert not page.computer.results  # ничего не пересчитывалось
+    page.go(1)  # файл 1 — фон, вне диапазона записи
+    assert "вне диапазона" in page.info.text()
+
+    page.source_box.setCurrentIndex(page.source_box.findData("compute"))  # «считать с текущими настройками»
+    page.set_view("droplets")
+    page.go(3)
+    assert page.info.text().startswith("капель: Python 15") and page.computer.results
+    window.close()

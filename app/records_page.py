@@ -7,6 +7,9 @@
 В середине — все кадры записи (не только диапазон) в одном из видов 1–5 (app/frame_view.py), шкала кадров
 с подсветкой диапазона, кнопки «Начало = этот кадр», «Конец = этот кадр» и «Центр затравки» (щелчок по
 кадру -> c_x, c_y, px с 1). Номер кадра — номер файла записи, как start_frame и fin_frame в таблице.
+«Капли и PIV» (рядом с видами): «считать с текущими настройками» — кадры считаются заново (видно, что дадут
+текущие rim и пороги); «взять из результатов st1» — виды 3–5 показывают сохранённое последним запуском st1
+(SavedResults из lib/st1/preview.py, мгновенно; вид 2 считается всегда — его в результатах нет).
 
 Справа — две вкладки. «Таблица»: все колонки таблицы (набор — из заголовков, описание колонки — во
 всплывающей подсказке). У пустого поля — кнопка-подсказка «← значение» предыдущей заполненной записи
@@ -26,6 +29,7 @@ PgUp PgDn — запись, 1–5 — вид, M — капли MATLAB, Esc — �
 import logging
 import math
 import time
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -33,7 +37,7 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QFormLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFormLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSlider,
                                QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout,
                                QWidget)
@@ -43,11 +47,12 @@ from app.params_page import CHANGED_STYLE, INVALID_STYLE, ParamsPanel
 from lib.common import files
 from lib.common.records import Record
 from lib.common.table_edit import EditableTable, TableSaveError, format_value, same_value
-from lib.st1.preview import COMPUTED_VIEWS, VIEWS
+from lib.st1.preview import COMPUTED_VIEWS, VIEWS, FrameResult, SavedResults
 
 log = logging.getLogger(__name__)
 
 VIEW_KEYS = {"1": "frame", "2": "clean", "3": "droplets", "4": "piv", "5": "piv_matlab"}
+SAVED_VIEWS = {"droplets", "piv", "piv_matlab"}  # виды, которые можно взять из результатов st1
 VIEW_BUTTONS = {"frame": "1 кадр", "clean": "2 без рима", "droplets": "3 капли", "piv": "4 PIV",
                 "piv_matlab": "5 PIV как в MATLAB"}
 POLL_MS = 100  # как часто забирать посчитанные в фоне кадры
@@ -127,6 +132,10 @@ class RecordsPage(QWidget):
         self.show_matlab = True
         self.matlab: tuple[list[np.ndarray], list[np.ndarray]] | None = None  # капли MATLAB по кадрам диапазона
         self.can_compute = False  # заданы кадры и rim (без них виды 2–5 не считаются)
+        self.source = "compute"  # капли и PIV: "compute" — считать, "file" — из результатов st1
+        self.saved: SavedResults | None = None  # результаты st1 текущей записи (читаются при первом показе)
+        self.saved_key: tuple | None = None  # (файл, время записи) прочитанных результатов
+        self.saved_error = ""
         self.waiting = False  # показан исходный кадр, потому что нужный вид ещё считается
         self.wanted: list[int] = []  # кадры, поставленные в фоновый расчёт
         self.rest_pending = False  # кадры впрок поставить в расчёт, когда посчитается текущий
@@ -231,6 +240,19 @@ class RecordsPage(QWidget):
         self.matlab_box.setChecked(True)
         self.matlab_box.toggled.connect(self._matlab_toggled)
         views.addWidget(self.matlab_box)
+        views.addSpacing(16)
+        views.addWidget(QLabel("Капли и PIV:"))
+        self.source_box = QComboBox()
+        self.source_box.addItem("считать с текущими настройками", "compute")
+        self.source_box.addItem("взять из результатов st1", "file")
+        self.source_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.source_box.setToolTip(
+            "Откуда виды 3–5 берут капли и PIV.\n"
+            "Считать — заново, с текущими rim и порогами (для подбора; 1–2 с на кадр).\n"
+            "Из результатов st1 — то, что сохранил последний запуск st1 (сразу; если пороги с тех пор\n"
+            "меняли, это старые капли). Вид 2 считается всегда — его в результатах нет.")
+        self.source_box.currentIndexChanged.connect(lambda _: self._source_changed())
+        views.addWidget(self.source_box)
         views.addStretch(1)
         views.addWidget(button("Весь кадр", self.view.fit, "показать кадр целиком"))
         hint = QLabel(HELP)
@@ -657,6 +679,7 @@ class RecordsPage(QWidget):
         self.stop_slideshow()
         self.i = i
         self.frames, self.frames_error, self.matlab = None, "", None
+        self.saved, self.saved_key = None, None
         self.frame_cache.clear()
         record = self.table.record(i)
         if record is None:
@@ -741,7 +764,10 @@ class RecordsPage(QWidget):
         try:
             frame = self._frame(self.number)
             result = None
-            if view in COMPUTED_VIEWS:
+            if view in COMPUTED_VIEWS and not self._computes(view):  # из результатов st1
+                result, text = self._saved_at(self.number)
+                error = result is None
+            elif view in COMPUTED_VIEWS:
                 if not self.can_compute:
                     text, error = "Для этого вида нужен rim (поле справа)", True
                 elif self.number in self.computer.errors:
@@ -754,6 +780,8 @@ class RecordsPage(QWidget):
                 view if result is not None else "frame", frame, result, matlab=self._matlab_at(self.number),
                 arrow_scale=self.thresholds.PIV_PLOT_ARROW_SCALE, speed_max=self.thresholds.PIV_PLOT_SPEED_MAX,
                 mm_per_px=self.settings.SCALE_MM_PER_PX, fps=self.settings.FPS)
+            if result is not None and not self._computes(view):
+                text = f"из результатов st1 ({datetime.fromtimestamp(self.saved.modified):%d.%m.%Y %H:%M}): {caption}"
             text = text or caption
         except Exception as e:  # ошибка расчёта или чтения кадра — показать, окно не закрывать
             log.exception("Ошибка показа кадра")
@@ -787,7 +815,7 @@ class RecordsPage(QWidget):
         """Поставить в расчёт текущий кадр, а когда он готов, — LOOKAHEAD следующих и весь диапазон записи
         (пока текущий не готов, кадры впрок не мешают ему считаться)."""
         self.wanted, self.rest_pending = [], False
-        if not self.can_compute or self.view_name not in COMPUTED_VIEWS:
+        if not self.can_compute or not self._computes(self.view_name):
             return
         n, record, with_piv = self.number, self.table.record(self.i), self.view_name in PIV_VIEWS
         if not self.computer.ready(n, with_piv) and n not in self.computer.errors:
@@ -833,6 +861,41 @@ class RecordsPage(QWidget):
         self.last_step = time.monotonic()
         self.go(self.number + direction)
 
+    def _computes(self, view: str) -> bool:
+        """Нужно ли для вида view считать кадр (нет — исходный кадр или вид берётся из результатов st1)."""
+        return view in COMPUTED_VIEWS and not (self.source == "file" and view in SAVED_VIEWS)
+
+    def _source_changed(self) -> None:
+        """Переключатель «Капли и PIV»: считать или брать из результатов st1."""
+        self.source = self.source_box.currentData()
+        self.draw()
+        self._prefetch()
+
+    def _saved_at(self, number: int) -> tuple[FrameResult | None, str]:
+        """Кадр number из готовых результатов st1 текущей записи — или (None, почему его нет).
+        Результаты перечитываются, если файл с тех пор записан заново (например, после запуска st1)."""
+        record = self.table.record(self.i)
+        path = record.st1_dir(Path(self.settings.OUTPUT_DIR)) / "particles.mat"
+        if not path.exists():
+            return None, "У записи нет результатов st1 — запустите st1 (вкладка «Запуск») или выберите «считать»"
+        key = (path, path.stat().st_mtime)
+        if key != self.saved_key:
+            self.saved_key, self.saved, self.saved_error = key, None, ""
+            try:
+                self.saved = SavedResults(path.parent)
+            except Exception as error:  # файл испорчен или не того вида — сказать, окно не закрывать
+                log.exception("Не удалось прочитать результаты st1")
+                self.saved_error = f"Не удалось прочитать результаты st1: {error}"
+        if self.saved is None:
+            return None, self.saved_error
+        if not record.has_frames or len(self.saved) != record.fin_frame - record.start_frame + 1:
+            return None, (f"Результаты st1 посчитаны для другого диапазона кадров (в них {len(self.saved)} кадров) — "
+                          "запустите st1 заново или выберите «считать»")
+        k = number - record.start_frame + 1
+        if not 1 <= k <= len(self.saved):
+            return None, "Кадр вне диапазона записи — в результатах st1 его нет"
+        return self.saved.result(k, record.start_frame), ""
+
     def set_view(self, view: str) -> None:
         """Вид кадра: frame, clean, droplets, piv, piv_matlab (клавиши 1–5)."""
         self.view_name = view
@@ -866,7 +929,7 @@ class RecordsPage(QWidget):
         if following > self.count:
             self.stop_slideshow()
             return
-        if (self.view_name in COMPUTED_VIEWS and self.can_compute and self.computer.parallel
+        if (self._computes(self.view_name) and self.can_compute and self.computer.parallel
                 and following not in self.computer.errors
                 and not self.computer.ready(following, self.view_name in PIV_VIEWS)):
             return  # следующий кадр ещё считается в фоне — ждём
