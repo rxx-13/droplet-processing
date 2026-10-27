@@ -577,8 +577,10 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
 
 ## 7. Как расширять
 
-- **Новый эксперимент** — скопировать папку в [experiments/](experiments/), поправить `settings.py`
-  и `thresholds.py`, выбрать её в `current.py`. Код не меняется.
+- **Новый эксперимент** — скопировать [experiments/example/](experiments/example/) (пример: выдуманные пути,
+  пороги как в MATLAB-скриптах, образец таблицы записей) под своим именем, поправить `settings.py`
+  и `thresholds.py`, выбрать её в `current.py`. Код не меняется. В git из `experiments/` хранятся только
+  пример и `current.py`, который его выбирает (см. `.gitignore`).
 - **Новый порог** — добавить в `thresholds.py` всех экспериментов, использовать в `from_thresholds`
   нужного класса (или в `process_record`), добавить строку в раздел 4 этого файла.
 - **Новая вкладка приложения** — новый файл в [app/](app/) по образцу `RecordsPage`, вкладка добавляется

@@ -77,8 +77,15 @@
 * Для v4_zot_new картинки есть только у F40_1, F40_2 (`RECORDS = ["F40_1", "F40_2"]`).
 * Результаты — в папке эксперимента: `OUTPUT_DIR = r"D:\ИПФ РАН\project\experiments\<эксп>\results"`
   (полный путь в settings.py; прежние результаты остались в `D:\ИПФ РАН\результаты python\`).
-* `experiments/` в `.gitignore` (git ведёт пользователь сам). Текущий эксперимент — clear_water_3;
-  его пороги st1 пользователь подбирает вручную (в `thresholds.py` — его значения, не трогать).
+* git ведёт пользователь сам. 2026-10-27 по его просьбе: из `experiments/` в git только пример
+  `experiments/example` (выдуманные пути, пороги как в MATLAB-скриптах v4_Zot_new, `records_example.xlsx`) и
+  `current.py`-заглушка (выбирает example); остальное — в `.gitignore`. У пользователя `current.py` помечен
+  `git update-index --skip-worktree` — его выбор эксперимента git не видит. Поменять заглушку: новый текст —
+  сразу в индекс (`git hash-object -w` + `git update-index --cacheinfo`), пометку не снимать, иначе в коммит
+  уйдёт его выбор. Его данные и результаты в git не класть.
+  В первом коммите (44a67f4) остались его settings/thresholds — удалять из истории только по его решению.
+* Текущий эксперимент — clear_water_3; его пороги st1 пользователь подбирает вручную (в `thresholds.py` —
+  его значения, не трогать).
 * `pyside6-essentials`, `pyqtgraph` — в `pyproject.toml` и в команде pip способа 2 (README).
 
 ## Открытые вопросы
