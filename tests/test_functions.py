@@ -16,13 +16,13 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import PatternFill
 
-from lib.analysis.dataset import DataTable
+from lib.analysis.dataset import DataTable, find_sources, load
 from lib.analysis.formulas import computed_columns, evaluate, fit, names_in, parameters_of
 from lib.analysis.labplot import write_csv, write_lml
 from lib.analysis.stats import Condition, binned, histogram, select, split, window_edges
 from lib.common.config_edit import SettingsFile, current_experiment, set_current_experiment, value_text
 from lib.common.files import last_number_in_name, save_dat
-from lib.common.records import read_records
+from lib.common.records import PROJECT_DIR, project_path, read_records
 from lib.common.table_edit import EditableTable, TableSaveError
 from lib.st1 import image_ops as ops
 from lib.st1.piv import PivGrid, PivResult, filter_piv, median_ignoring_nan
@@ -75,6 +75,34 @@ def test_records_accept_both_column_spellings_and_both_path_layouts(tmp_path):
     r2, r3 = read_records(t2)
     assert (r2.name, r2.path, r2.rim, r2.cx) == ("0201", "water/140/0201", 200, 28)
     assert r2.has_frames and not r3.has_frames
+
+
+def test_relative_paths_in_settings_are_from_project_folder(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # текущая папка — не папка проекта: пути всё равно от папки проекта
+    assert project_path(r"experiments\example1\results") == PROJECT_DIR / "experiments" / "example1" / "results"
+    assert project_path(tmp_path) == tmp_path  # полный путь — как есть
+    records = read_records(Path(r"experiments\example1\records.xlsx"))
+    assert len(records) == 22 and EditableTable(Path(r"experiments\example1\records.xlsx")).path.is_file()
+    assert records[0].st4_dir(Path("results")) == PROJECT_DIR / "results" / "st4" / f"{records[0].path}_output_st4"
+    assert records[0].images_dir(tmp_path) == tmp_path / records[0].path
+
+
+@pytest.mark.skipif(not (PROJECT_DIR / "experiments" / "example1" / "results").is_dir(),
+                    reason="синтетических результатов примеров нет (в git они не хранятся)")
+def test_example_experiments_have_results_with_visible_dependencies():
+    sources, problems = find_sources(PROJECT_DIR / "experiments")
+    examples = [s for s in sources if s.experiment in ("example1", "example2", "example3")]
+    table, problems = load(examples, "tracks")
+    c = table.columns
+    assert len(examples) == 3 and not problems and set(c["experiment"]) == {"example1", "example2", "example3"}
+    first = c["experiment"] == "example1"
+    assert first.sum() > 20000 and len(set(c["record"][first])) == 21  # 22-я запись таблицы — без результатов
+    vx = [c["vx"][first & (c["F"] == f)].mean() for f in (30, 45, 60)]
+    r = [np.median(c["r"][first & (c["F"] == f)]) for f in (30, 45, 60)]
+    assert vx[0] < vx[1] < vx[2] and r[0] > r[1] > r[2]  # ветер сильнее — капли быстрее и мельче
+    low, high = first & (c["area_low_edge"] < 3), first & (c["area_low_edge"] > 35)
+    assert low.sum() > 3 * high.sum() and c["vy"][low].mean() > c["vy"][high].mean()  # выше — капель меньше, медленнее
+    assert np.isnan(c["bag_hight"][first]).any() and len(load(examples, "areas")[0]) > 300
 
 
 def test_records_selection_by_condition_and_name(tmp_path):

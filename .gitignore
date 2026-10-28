@@ -9,10 +9,11 @@
 __pycache__/
 .pytest_cache/
 
-# папки экспериментов (настройки с личными путями, результаты) — в git не храним; в git только пример
-# experiments/example и current.py, который его выбирает. Чтобы git не замечал свой выбор эксперимента
-# в current.py, после скачивания проекта один раз: git update-index --skip-worktree experiments/current.py
+# папки экспериментов (настройки с личными путями, результаты) — в git не храним; в git только настройки
+# и таблицы примеров experiments/example1..3 (их результаты — нет: это больше тысячи файлов) и current.py,
+# который выбирает example1. Чтобы git не замечал свой выбор эксперимента в current.py, после скачивания
+# проекта один раз:  git update-index --skip-worktree experiments/current.py
 experiments/*
 !experiments/current.py
-!experiments/example/
-experiments/example/results/
+!experiments/example*/
+experiments/example*/results/

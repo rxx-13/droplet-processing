@@ -17,6 +17,8 @@
     <OUTPUT_DIR>/PIV/<путь записи>_output_st1_droplets/      результат st1
     <OUTPUT_DIR>/PTV/<путь записи>_output_st2_PTV/           результат st2
     <OUTPUT_DIR>/st4/<путь записи>_output_st4/               результат st4
+Пути в settings.py (IMAGES_DIR, TABLE_FILE, OUTPUT_DIR, MATLAB_RESULTS_DIR) — полные или от папки проекта,
+например experiments\\example1\\results (project_path): так примеры работают, где бы ни лежал проект.
 """
 
 import logging
@@ -30,6 +32,8 @@ from typing import Any
 from openpyxl import load_workbook
 
 log = logging.getLogger(__name__)
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]  # папка проекта: от неё — относительные пути в settings.py
 
 # Названия колонок: в разных таблицах одна и та же величина называется по-разному.
 COLUMN_NAMES = {
@@ -46,6 +50,12 @@ COLUMN_NAMES = {
     "bag_frame": ("bag_frame",),
 }
 REQUIRED_COLUMNS = ("rec_name", "images_path_side")
+
+
+def project_path(path: str | Path) -> Path:
+    """Путь из settings.py: полный — как есть, относительный — от папки проекта."""
+    path = Path(path)
+    return path if path.is_absolute() else PROJECT_DIR / path
 
 
 @dataclass(frozen=True)
@@ -73,20 +83,20 @@ class Record:
                 and self.fin_frame >= self.start_frame >= 1)
 
     def images_dir(self, images_root: Path) -> Path:
-        """Папка кадров: <IMAGES_DIR>/<путь записи>."""
-        return images_root / self.path
+        """Папка кадров: <IMAGES_DIR>/<путь записи> (IMAGES_DIR — полный или от папки проекта)."""
+        return project_path(images_root) / self.path
 
     def st1_dir(self, output_root: Path) -> Path:
         """Папка результата st1: <OUTPUT_DIR>/PIV/<путь записи>_output_st1_droplets."""
-        return output_root / "PIV" / f"{self.path}_output_st1_droplets"
+        return project_path(output_root) / "PIV" / f"{self.path}_output_st1_droplets"
 
     def st2_dir(self, output_root: Path) -> Path:
         """Папка результата st2: <OUTPUT_DIR>/PTV/<путь записи>_output_st2_PTV."""
-        return output_root / "PTV" / f"{self.path}_output_st2_PTV"
+        return project_path(output_root) / "PTV" / f"{self.path}_output_st2_PTV"
 
     def st4_dir(self, output_root: Path) -> Path:
         """Папка результата st4: <OUTPUT_DIR>/st4/<путь записи>_output_st4."""
-        return output_root / "st4" / f"{self.path}_output_st4"
+        return project_path(output_root) / "st4" / f"{self.path}_output_st4"
 
 
 def _text(value: Any) -> str:
@@ -114,7 +124,9 @@ def _integer(value: Any) -> int | None:
 
 def read_records(table_file: Path, conditions: list[float] | tuple[float, ...] = (),
                  names: list[str] | tuple[str, ...] = ()) -> list[Record]:
-    """Записи из таблицы; conditions — номера условий, names — имена записей (пусто = все)."""
+    """Записи из таблицы table_file (полный путь или от папки проекта); conditions — номера условий,
+    names — имена записей (пусто = все)."""
+    table_file = project_path(table_file)
     workbook = load_workbook(table_file, data_only=True, read_only=True)
     rows = [list(row) for row in workbook.worksheets[0].iter_rows(values_only=True)]
     workbook.close()

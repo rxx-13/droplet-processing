@@ -77,12 +77,16 @@
 * Для v4_zot_new картинки есть только у F40_1, F40_2 (`RECORDS = ["F40_1", "F40_2"]`).
 * Результаты — в папке эксперимента: `OUTPUT_DIR = r"D:\ИПФ РАН\project\experiments\<эксп>\results"`
   (полный путь в settings.py; прежние результаты остались в `D:\ИПФ РАН\результаты python\`).
-* git ведёт пользователь сам. 2026-10-27 по его просьбе: из `experiments/` в git только пример
-  `experiments/example` (выдуманные пути, пороги как в MATLAB-скриптах v4_Zot_new, `records_example.xlsx`) и
-  `current.py`-заглушка (выбирает example); остальное — в `.gitignore`. У пользователя `current.py` помечен
-  `git update-index --skip-worktree` — его выбор эксперимента git не видит. Поменять заглушку: новый текст —
-  сразу в индекс (`git hash-object -w` + `git update-index --cacheinfo`), пометку не снимать, иначе в коммит
-  уйдёт его выбор. Его данные и результаты в git не класть.
+* git ведёт пользователь сам. Из `experiments/` в git только `settings.py`, `thresholds.py`, `records.xlsx`
+  примеров `example1`–`example3` (2026-10-28; пути к кадрам — заглушки, пороги как в MATLAB-скриптах v4_Zot_new)
+  и `current.py`-заглушка (выбирает example1); остальное, и `results/` примеров, — в `.gitignore`. Синтетические
+  результаты st4 примеров (≈ 45 тыс. строк) — только на диске; сделаны разовым скриптом вне проекта (модель
+  описана в README, «Примеры»). Пути в settings.py — полные или от папки проекта (`project_path`).
+  У пользователя `current.py` помечен `git update-index --skip-worktree` — его выбор эксперимента git не видит.
+  Поменять заглушку: новый текст — в индекс (`git hash-object -w` + `git update-index --cacheinfo`), затем
+  **снова** `git update-index --skip-worktree experiments/current.py` (`--cacheinfo` снимает пометку, и
+  `git add -A` тогда положит его выбор); проверить `git ls-files -v` (S) и `git show :experiments/current.py`.
+  Его данные и результаты в git не класть.
   В первом коммите (44a67f4) остались его settings/thresholds — удалять из истории только по его решению.
 * Текущий эксперимент — clear_water_3; его пороги st1 пользователь подбирает вручную (в `thresholds.py` —
   его значения, не трогать).

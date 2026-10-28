@@ -25,7 +25,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from .records import COLUMN_NAMES, REQUIRED_COLUMNS, Record, _integer, _number, _text
+from .records import COLUMN_NAMES, REQUIRED_COLUMNS, Record, _integer, _number, _text, project_path
 
 
 class TableSaveError(Exception):
@@ -139,11 +139,11 @@ class EditableTable:
 
     Строки — по номеру i (с 0, в порядке таблицы), колонки — по заголовку. value(i, h) — значение с учётом
     правок; set(i, h, v) — правка (значение, равное исходному, правку снимает); save — запись в файл.
-    path — файл таблицы (TABLE_FILE); headers, descriptions, rows — как возвращает read_table.
+    path — файл таблицы (TABLE_FILE: полный путь или от папки проекта); headers, descriptions, rows — как возвращает read_table.
     """
 
     def __init__(self, path: Path) -> None:
-        self.path = Path(path)
+        self.path = project_path(path)
         self.headers, self.descriptions, self.rows = read_table(self.path)
         self.changes: dict[tuple[int, str], Any] = {}
         self.new_columns: dict[str, str] = {}  # добавленные колонки, которых ещё нет в файле: заголовок -> описание

@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
 from app.frame_view import PIV_VIEWS, FrameComputer, FrameScale, FrameView
 from app.params_page import CHANGED_STYLE, INVALID_STYLE, ParamsPanel
 from lib.common import files
-from lib.common.records import COLUMN_NAMES, Record
+from lib.common.records import COLUMN_NAMES, Record, project_path
 from lib.common.table_edit import EditableTable, TableSaveError, format_value, same_value
 from lib.st1.preview import COMPUTED_VIEWS, VIEWS, FrameResult, SavedResults
 
@@ -394,7 +394,7 @@ class RecordsPage(QWidget):
         """Таблица, список, поля и текущая запись для настроек settings и порогов thresholds. Если в той же
         таблице есть несохранённые правки, она не перечитывается."""
         self.settings, self.thresholds = settings, thresholds
-        path = Path(settings.TABLE_FILE)
+        path = project_path(settings.TABLE_FILE)
         same_table = self.table is not None and self.table.path == path
         old_i, old_number = self.i, self.number
         if not (same_table and self.table.changes):
@@ -493,7 +493,7 @@ class RecordsPage(QWidget):
             self.message.emit("Нет несохранённых правок")
             return True
         path = self.table.path
-        backup_dir = None if path in self.backed_up else Path(self.settings.OUTPUT_DIR) / BACKUP_FOLDER
+        backup_dir = None if path in self.backed_up else project_path(self.settings.OUTPUT_DIR) / BACKUP_FOLDER
         try:
             backup = self.table.save(backup_dir)
         except TableSaveError as error:

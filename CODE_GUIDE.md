@@ -174,16 +174,17 @@ run.py → MainWindow (window.py)                  две части: «Обра
 
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
+| `project_path` | путь из settings.py: полный — как есть, относительный — от папки проекта | `Record.images_dir`, `Record.st1_dir`, `Record.st2_dir`, `Record.st4_dir`, `read_records`, `EditableTable`, `RecordsPage`, tests | — | — |
 | `Record` | одна строка таблицы | `read_records`, `EditableTable.record` | — | строка rec_list |
 | `Record.has_frames` | задан ли диапазон кадров | `run_stage`, `Viewer`, `EditableTable.filled`, `RecordsPage`, tests | — | — |
-| `Record.images_dir` | папка кадров записи | main/st1, `RecordPreview`, `RecordsPage` | — | fullfile(images_folder_base, …) |
-| `Record.st1_dir` | папка результата st1 | main/st1, main/st2, `RecordPreview._load_matlab`, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st1 |
+| `Record.images_dir` | папка кадров записи (IMAGES_DIR — полный или от папки проекта) | main/st1, `RecordPreview`, `RecordsPage` | — | fullfile(images_folder_base, …) |
+| `Record.st1_dir` | папка результата st1 (OUTPUT_DIR — полный или от папки проекта) | main/st1, main/st2, `RecordPreview._load_matlab`, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st1 |
 | `Record.st2_dir` | папка результата st2 | main/st2, main/st4, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st2 |
 | `Record.st4_dir` | папка результата st4 | main/st4, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st4 |
 | `_text` | ячейка → текст | `read_records`, `read_table`, `save_cells`, `EditableTable` | — | — |
 | `_number` | ячейка → число или None | `read_records`, `_integer`, `EditableTable.record` | — | — |
 | `_integer` | ячейка → целое или None | `read_records`, `EditableTable.record` | `_number` | — |
-| `read_records` | записи из xlsx с выбором по условиям и именам | `run_stage`, `Viewer`, tests | `Record`, `_text`, `_number`, `_integer` | My_importfile_xls_with_headers_to_table_v1 |
+| `read_records` | записи из xlsx (путь — полный или от папки проекта) с выбором по условиям и именам | `run_stage`, `Viewer`, tests | `Record`, `_text`, `_number`, `_integer` | My_importfile_xls_with_headers_to_table_v1 |
 | `run_stage` | цикл стадии по записям, лог, код выхода | main/st1, main/st2, main/st4 | `read_records`, `process_record` стадии | цикл по rr_i |
 
 ### [lib/common/table_edit.py](lib/common/table_edit.py) — таблица записей для приложения
@@ -484,7 +485,7 @@ run.py → MainWindow (window.py)                  две части: «Обра
 
 | Имя | Где задано | Кто использует | На что влияет |
 |---|---|---|---|
-| `IMAGES_DIR` | settings | main/st1, `RecordPreview`, `RecordsPage` | где искать кадры |
+| `IMAGES_DIR` | settings | main/st1, `RecordPreview`, `RecordsPage` | где искать кадры; этот и другие пути — полные или от папки проекта (`experiments\example1\results`) |
 | `TABLE_FILE` | settings | `run_stage`, `Viewer`, `RecordsPage`, `sources_of`, tests | таблица записей |
 | `OUTPUT_DIR` | settings | main/st1, main/st2, main/st4, `RecordsPage`, `sources_of` | куда писать результаты; приложение — отметки st1/st2/st4 и копии таблицы (`table_backups`) |
 | `CONDITIONS` | settings | `run_stage`, `Viewer` | какие условия обрабатывать |
@@ -570,17 +571,18 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
 
 | Файл | Что проверяет |
 |---|---|
-| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py; добавление колонки в таблицу; обработка результатов: выборка, окна, гистограмма, статистика по окнам, серии; проект LabPlot и CSV; формулы: защита, порядок параметров, свои колонки, подгонка |
+| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py; добавление колонки в таблицу; обработка результатов: выборка, окна, гистограмма, статистика по окнам, серии; проект LabPlot и CSV; формулы: защита, порядок параметров, свои колонки, подгонка; пути в settings.py от папки проекта; примеры экспериментов: читаются и дают заложенные зависимости (если их результаты есть на диске) |
 | [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области; размер бэга (четыре щелчка, колонки добавляются в таблицу); «Обработка результатов»: загрузка st4, выборка, графики, экспорт; своя колонка, подгонка, лог-ось, настройки в файл и обратно; флажки: щелчок по строке, протягивание, Shift |
 | [test_docs.py](tests/test_docs.py) | описания у всех функций (lib/, main/, tools/, app/); полнота таблиц этого файла |
 | [compare_with_matlab.py](tests/compare_with_matlab.py) | не тест, а отчёт: насколько результаты совпадают с результатами MATLAB |
 
 ## 7. Как расширять
 
-- **Новый эксперимент** — скопировать [experiments/example/](experiments/example/) (пример: выдуманные пути,
-  пороги как в MATLAB-скриптах, образец таблицы записей) под своим именем, поправить `settings.py`
-  и `thresholds.py`, выбрать её в `current.py`. Код не меняется. В git из `experiments/` хранятся только
-  пример и `current.py`, который его выбирает (см. `.gitignore`).
+- **Новый эксперимент** — скопировать пример [experiments/example1/](experiments/example1/) под своим именем,
+  поправить `settings.py` и `thresholds.py`, выбрать её в `current.py`. Код не меняется. В git из `experiments/`
+  хранятся только настройки и таблицы записей примеров `example1`–`example3` (пути к кадрам — заглушки;
+  их синтетические результаты st4 для «Обработки результатов» — только на диске, не в git) и `current.py`,
+  который выбирает `example1` (см. `.gitignore`).
 - **Новый порог** — добавить в `thresholds.py` всех экспериментов, использовать в `from_thresholds`
   нужного класса (или в `process_record`), добавить строку в раздел 4 этого файла.
 - **Новая вкладка приложения** — новый файл в [app/](app/) по образцу `RecordsPage`, вкладка добавляется
