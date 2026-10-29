@@ -454,7 +454,7 @@ def test_results_processing_loads_st4_selects_plots_and_exports(run, tmp_path):
     row = page.add_condition()  # выборка: одна область
     row.column.setCurrentIndex(row.column.findText("area_low_edge"))
     row.select_values([row.values.item(0).text()])
-    page.series_by.setCurrentIndex(page.series_by.findData("record"))
+    page.color_by.setCurrentIndex(page.color_by.findData("record"))
     page.replot()
     assert 0 < len(page.selection) < len(tracks) and page.series[0].label == "record = rec1"
     page.kind.setCurrentIndex(page.kind.findData("histogram"))
@@ -485,6 +485,46 @@ def test_results_processing_loads_st4_selects_plots_and_exports(run, tmp_path):
     again.set_state(json.loads(json.dumps(page.state())))
     assert len(again.selection) == len(page.selection) and len(again.series) == len(page.series)
     assert np.allclose(again.fits[0][1].values["a"], result.values["a"])
+
+    # разделение: цвет — по одной колонке, маркер — по другой, графики рядом — по третьей; вид кривых
+    page.curve_mode.setCurrentIndex(page.curve_mode.findData("off"))
+    page.log_y.setChecked(False)
+    page.y_from.setText("")
+    for row in list(page.rows):
+        page._remove_condition(row)
+    page.color_by.setCurrentIndex(page.color_by.findData("record"))
+    page.marker_by.setCurrentIndex(page.marker_by.findData("area_low_edge"))
+    page.replot()
+    n_low = len(page.selection.unique("area_low_edge"))
+    assert n_low == 3 and len(page.drawn) == n_low and len({d.marker for d in page.drawn}) == n_low
+    assert "маркер и линия — area_low_edge (3)" in page.summary.text() and page.curve_table.rowCount() == n_low
+    page.marker_by.setCurrentIndex(page.marker_by.findData(""))
+    page.facet_by.setCurrentIndex(page.facet_by.findData("area_low_edge"))
+    page.replot()
+    shown = [ax for ax in page.figure.axes if ax.axison]
+    assert len(shown) == n_low and len({d.panel for d in page.drawn}) == n_low
+    page.color_by.setCurrentIndex(page.color_by.findData("area_low_edge"))  # кривых: по одной на графике
+    page.facet_by.setCurrentIndex(page.facet_by.findData(""))
+    page.replot()
+    hidden = page.drawn[0].key
+    page.set_style(hidden, visible=False)
+    page.set_style(page.drawn[-1].key, color="#ff0000", label="своя подпись")
+    page.replot()
+    assert all(d.key != hidden for d in page.visible) and len(page.visible) < len(page.drawn)
+    assert hidden not in set(page.series_table()["series"]) and not any(
+        name.endswith("| " + hidden) for name in page.series_table()["series"])
+    labels = {t.get_text() for ax in page.figure.axes if ax.get_legend() for t in ax.get_legend().get_texts()}
+    assert "своя подпись" in labels
+    third = AnalysisPage(tmp_path / "experiments")  # вид кривых и разделение — в файл и обратно
+    third.set_state(json.loads(json.dumps(page.state())))
+    assert third.styles == page.styles and len(third.visible) == len(page.visible)
+    old_file = page.state()
+    old_file["combos"]["series_by"] = old_file["combos"].pop("color_by")  # файл настроек прежнего вида
+    for name in ("marker_by", "facet_by"):
+        old_file["combos"].pop(name)
+    fourth = AnalysisPage(tmp_path / "experiments")
+    fourth.set_state(old_file)
+    assert fourth.color_by.currentData() == "area_low_edge"
 
 
 def test_check_painter_toggles_by_row_click_drag_and_shift():

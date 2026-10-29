@@ -144,7 +144,8 @@ run.py → MainWindow (window.py)                  две части: «Обра
 └─ AnalysisPage (analysis_page.py)               часть «Обработка результатов» (от эксперимента не зависит)
       find_sources, load (lib/analysis/dataset.py) ← итоговые .mat / .dat st4 + параметры записей из таблиц
       computed_columns (lib/analysis/formulas.py)    свои колонки «имя = формула»
-      ConditionRow → Condition, select; window_edges; histogram / binned / points; split (lib/analysis/stats.py)
+      ConditionRow → Condition.mask; window_edges; split (графики рядом → цвет → маркер) → histogram / binned /
+      points (lib/analysis/stats.py) → Drawn (кривая: график, подпись, вид) → _draw; список кривых, сводка
       fit, evaluate (lib/analysis/formulas.py)       своя кривая и подгонка параметров
       write_csv, write_lml (lib/analysis/labplot.py)  экспорт в CSV и проект LabPlot; state / set_state — настройки в .json
 ```
@@ -279,17 +280,17 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | Функция | Что делает | Кто вызывает | Использует | MATLAB |
 |---|---|---|---|---|
 | `Condition` | условие выборки: равно значениям и/или от–до | `ConditionRow.condition`, tests | — | — |
-| `Condition.mask` | какие строки подходят | `select` | `DataTable.is_numeric` | — |
-| `select` | строки, подходящие под все условия | `AnalysisPage.replot`, tests | `Condition.mask`, `DataTable.take` | — |
+| `Condition.mask` | какие строки подходят | `select`, `AnalysisPage._select` | `DataTable.is_numeric` | — |
+| `select` | строки, подходящие под все условия | tests | `Condition.mask`, `DataTable.take` | — |
 | `window_edges` | границы окон: ширина или число, пределы | `AnalysisPage.replot`, tests | — | — |
 | `Series` | посчитанная кривая: x, y, разброс, число, окна | `histogram`, `binned`, `points`, `AnalysisPage` | — | — |
 | `Series.columns` | таблица кривой для экспорта | `AnalysisPage` | — | — |
 | `_window_index` | номер окна каждого значения | `histogram`, `binned` | — | — |
-| `histogram` | распределение по окнам: число, доля, плотность | `AnalysisPage.replot`, tests | `_window_index` | — |
-| `binned` | статистика y по окнам x: среднее ± СКО, ± ошибка среднего, медиана, число | `AnalysisPage.replot`, tests | `_window_index` | — |
-| `points` | точки (x, y) без NaN | `AnalysisPage.replot` | — | — |
+| `histogram` | распределение по окнам: число, доля, плотность | `AnalysisPage._split`, tests | `_window_index` | — |
+| `binned` | статистика y по окнам x: среднее ± СКО, ± ошибка среднего, медиана, число | `AnalysisPage._split`, tests | `_window_index` | — |
+| `points` | точки (x, y) без NaN | `AnalysisPage._split` | — | — |
 | `label_value` | значение для подписи (целые — без «.0») | `split`, `ConditionRow` | — | — |
-| `split` | серии по значениям колонки | `AnalysisPage.replot`, tests | `DataTable.unique`, `DataTable.take` | — |
+| `split` | серии по значениям колонки | `AnalysisPage._split` (цвет, маркер, графики рядом), tests | `DataTable.unique`, `DataTable.take` | — |
 
 ### [lib/analysis/formulas.py](lib/analysis/formulas.py) — свои формулы и подгонка
 
@@ -467,12 +468,16 @@ run.py → MainWindow (window.py)                  две части: «Обра
     разбор сообщений процессов — `_poll`, `_handle`, итог — `_finish`);
   - [results_page.py](app/results_page.py): `ResultsPage` — вкладка «Результаты» (`refresh`, `show_record`,
     `_draw_tracks`, `_fill_summary`, `_area_selected`, `open_folder`);
-  - [analysis_page.py](app/analysis_page.py): `AnalysisPage` — часть «Обработка результатов»; разделы
-    слева — `Section` (сворачиваются): источники (`refresh_sources`, `checked_sources`, `set_checked`), загрузка
-    (`load_data`, `_fill_columns`), свои колонки (`_apply_columns`), выборка (`ConditionRow`, `add_condition`),
-    график (`replot`, `_draw`, `_decorate`, `_finish`; вид — `_style`, `_colors`), своя кривая и подгонка
-    (`_fill_parameters`, `initial_values`, `_curves`), экспорт (`export`, `series_table`, `fit_table`,
-    `_export_dialog`), настройки в файл (`state`, `set_state`);
+  - [analysis_page.py](app/analysis_page.py): `AnalysisPage` — часть «Обработка результатов», раскладка как
+    в LabPlot (`_build`, `_panel`): слева данные, в середине сводка (`_summary`), график и таблица, справа свойства;
+    разделы — `Section` (сворачиваются). Источники (`refresh_sources`, `checked_sources`, `set_checked`), загрузка
+    (`load_data`, `_fill_columns`), свои колонки (`_apply_columns`), выборка (`ConditionRow` с числом оставшихся
+    строк, `add_condition`, `_select`), кривые (`_split` → `Drawn`: график, подпись, номера цвета и маркера;
+    вид — `_look`, правки — `styles`, `set_style`, `reset_styles`, список — `_fill_curve_table`,
+    `_curve_item_changed`, `_pick_color`), график (`replot`, `_draw`, `_decorate`, `_legend`, `_finish`; размеры —
+    `_style`, `_colors`), своя кривая и подгонка (`_fill_parameters`, `initial_values`, `_curves`), экспорт
+    (`export`, `series_table`, `fit_table`, `_export_dialog`), настройки в файл (`state`, `set_state`; старое
+    `series_by` читается как `color_by`);
   - [frame_view.py](app/frame_view.py): `FrameComputer` — расчёт кадров в процессах (`configure`, `focus`,
     `collect`, `result`); `FrameView` — показ видов 1–5 (`show`), крестик центра (`set_center`), щелчок по кадру
     (сигнал `clicked`); `FrameScale` — шкала кадров.
