@@ -160,6 +160,26 @@ def test_st4_means_in_physical_units(run):
         assert 4 * SCALE * 1000 * 0.9 < r_mean < 8 * SCALE * 1000 * 1.1  # мкм, в пределах размеров капель
 
 
+def test_st4_takes_fps_from_a_table_column(run, tmp_path):
+    """FPS = "fps" в settings.py: у записи своё значение из колонки таблицы (здесь 5000 вместо 4000)."""
+    table = tmp_path / "table.xlsx"
+    workbook = load_workbook(run.settings.TABLE_FILE)
+    sheet = workbook.active
+    sheet.cell(1, 9).value, sheet.cell(2, 9).value, sheet.cell(3, 9).value = "fps", "кадров в секунду", 5000
+    workbook.save(table)
+
+    out = tmp_path / "out"
+    shutil.copytree(run.out / "PTV", out / "PTV")  # готовый результат st2 — st4 считает только его
+    settings = SimpleNamespace(**{**vars(run.settings), "TABLE_FILE": str(table), "OUTPUT_DIR": str(out),
+                                  "FPS": "fps"})
+    (record,) = read_records(table)
+    _script("main", "st4_droplets_in_area").process_record(record, settings, THRESHOLDS)
+
+    stat = files.load_dat(record.st4_dir(out) / "_all_stat.dat")
+    vx_true = VELOCITY[0] * SCALE / 1000 * 5000  # м/с
+    np.testing.assert_allclose(stat[:, 3], vx_true, rtol=0.03)
+
+
 def _viewer(run):
     return _script("tools", "st1_viewer").Viewer(run.settings, THRESHOLDS, workers=0)  # без фоновых процессов
 
@@ -241,6 +261,10 @@ def test_app_opens_records_shows_every_view_and_saves_the_table(run, tmp_path):
         assert "шибка" not in page.info.text(), f"{view}: {page.info.text()}"
     page.set_view("droplets")
     assert "капель: Python 15" in page.info.text()
+    page.bag_box.setChecked(True)  # удалённый бэг — полупрозрачной подсветкой поверх вида «капли»
+    assert page.view.erased.isVisible() and "удалённый бэг" in page.info.text()
+    page.bag_box.setChecked(False)
+    assert not page.view.erased.isVisible()
     page.toggle_slideshow()
     for _ in range(3):
         page._slideshow_step()  # шаг таймера слайдшоу
@@ -408,6 +432,9 @@ def test_app_shows_saved_st1_results_without_recomputing(run):
     page.set_view("droplets")
     page.go(3)
     assert page.info.text().startswith("из результатов st1") and "капель: Python 15" in page.info.text()
+    page.bag_box.setChecked(True)  # маски удалённого в результатах st1 нет — подпись об этом
+    assert not page.view.erased.isVisible() and "маски удалённого нет" in page.info.text()
+    page.bag_box.setChecked(False)
     page.set_view("piv")
     assert "PIV файлов 3→4" in page.info.text()
     page.set_view("piv_matlab")

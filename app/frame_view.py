@@ -275,6 +275,12 @@ class FrameView(pg.GraphicsLayoutWidget):
         item.setRect(rect)
         item.setVisible(True)
 
+    def _erased_overlay(self, mask: np.ndarray) -> None:
+        """Полупрозрачная подсветка маски удалённого (рим, брызги, вода) — как на виде 2."""
+        rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
+        rgba[mask] = ERASED_RGBA
+        self._overlay(self.erased, rgba, QRectF(0.5, 0.5, mask.shape[1], mask.shape[0]))
+
     def _clear(self) -> None:
         """Убрать наложения прошлого кадра (крестик центра остаётся)."""
         empty = np.zeros(0)
@@ -328,10 +334,12 @@ class FrameView(pg.GraphicsLayoutWidget):
     # --- виды
     def show(self, view: str, frame: np.ndarray, result: FrameResult | None = None, *,
              matlab: tuple[np.ndarray, np.ndarray] | None = None, arrow_scale: float = 10.0,
-             speed_max: float = 7.0, mm_per_px: float = 1.0, fps: float = 1.0) -> str:
+             speed_max: float = 7.0, mm_per_px: float = 1.0, fps: float = 1.0,
+             show_erased: bool = False) -> str:
         """Нарисовать вид view: frame — исходный кадр (уровни файла); result — расчёт кадра (для вида
         frame не нужен); matlab — капли MATLAB (центры, радиусы) или None; arrow_scale — длина стрелок
-        PIV на 1 px/кадр; speed_max — верх шкалы скорости, м/с; mm_per_px, fps — для перевода в м/с.
+        PIV на 1 px/кадр; speed_max — верх шкалы скорости, м/с; mm_per_px, fps — для перевода в м/с;
+        show_erased — полупрозрачная подсветка удалённого бэга на виде «капли».
         Возвращает подпись к виду."""
         self._clear()
         self._base(frame, *_levels(frame))
@@ -339,15 +347,18 @@ class FrameView(pg.GraphicsLayoutWidget):
             return ""
         if view == "clean":
             self._base(result.clean, 0, 255)
-            mask = result.erased_mask
-            rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
-            rgba[mask] = ERASED_RGBA
-            self._overlay(self.erased, rgba, QRectF(0.5, 0.5, mask.shape[1], mask.shape[0]))
+            self._erased_overlay(result.erased_mask)
             return "сиреневым — закрашено как рим, крупные брызги и вода"
         if view == "droplets":
             text = f"капель: Python {self._draw_circles(self.circles, result.centers, result.radii, 'r')} (красные)"
             if matlab is not None:
                 text += f", MATLAB {self._draw_circles(self.matlab_circles, *matlab, None)} (голубые)"
+            if show_erased:
+                if result.erased.size:
+                    self._erased_overlay(result.erased_mask)
+                    text += "; сиреневым — удалённый бэг"
+                else:
+                    text += "; маски удалённого нет — она есть только при расчёте"
             return text
         piv = result.piv
         if piv is None:

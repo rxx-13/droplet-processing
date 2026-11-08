@@ -232,9 +232,15 @@ class EditableTable:
         path = side.replace("\\", "/").rstrip("/")
         if not path.endswith("/" + name) and path != name:  # как в read_records
             path = f"{path}/{name}"
+        numbers = {}
+        for header in self.headers:
+            value = _number(self.value(i, header))
+            if value is not None:
+                numbers[header] = value
         return Record(name=name, path=path, cond_num=_number(get("cond_num")),
                       start_frame=_integer(get("start_frame")), fin_frame=_integer(get("fin_frame")),
-                      rim=_number(get("rim")), cx=_number(get("cx")), cy=_number(get("cy")))
+                      rim=_number(get("rim")), cx=_number(get("cx")), cy=_number(get("cy")),
+                      numbers=numbers)
 
     # --- автозаполнение
     def filled(self, i: int) -> bool:

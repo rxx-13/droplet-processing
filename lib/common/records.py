@@ -8,7 +8,10 @@
     rim или rim_new                   — порог площади рима и крупных брызг, px² (st1);
     cx или c_x, cy или c_y            — начало координат для st4, px;
     bag_hight, bag_length, bag_frame  — высота и длина бэга, мм, и кадр, на котором они измерены
-                                        (заполняет приложение; стадиям не нужны).
+                                        (заполняет приложение; стадиям не нужны);
+    fps                               — кадров в секунду записи (необязательная: читается, если в settings.py
+                                        FPS — не число, а имя этой колонки; так же можно задать и другие
+                                        числовые настройки — record_setting).
 Строки без rec_name или images_path_side пропускаются.
 
 Путь записи: images_path_side, а если он не оканчивается именем записи — images_path_side\\rec_name.
@@ -24,7 +27,7 @@
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -64,7 +67,8 @@ class Record:
 
     name — rec_name; path — путь записи относительно IMAGES_DIR (разделитель '/'); cond_num — номер
     условий; start_frame, fin_frame — диапазон кадров (номера файлов, с 1); rim — порог площади рима, px²;
-    cx, cy — начало координат st4, px. Отсутствующее в таблице — None.
+    cx, cy — начало координат st4, px; numbers — числовые ячейки строки по заголовкам колонок.
+    Отсутствующее в таблице — None.
     """
 
     name: str
@@ -75,12 +79,21 @@ class Record:
     rim: float | None
     cx: float | None
     cy: float | None
+    numbers: dict[str, float | None] = field(default_factory=dict, compare=False, repr=False)  # все числа строки
 
     @property
     def has_frames(self) -> bool:
         """Задан ли правильный диапазон кадров (без него запись не обрабатывается)."""
         return (self.start_frame is not None and self.fin_frame is not None
                 and self.fin_frame >= self.start_frame >= 1)
+
+    def number(self, column: str) -> float | None:
+        """Число из колонки таблицы column (заголовок; точное совпадение, затем без учёта регистра);
+        пусто, текст или нет такой колонки — None."""
+        if column in self.numbers:
+            return self.numbers[column]
+        lowered = column.lower()
+        return next((value for header, value in self.numbers.items() if header.lower() == lowered), None)
 
     def images_dir(self, images_root: Path) -> Path:
         """Папка кадров: <IMAGES_DIR>/<путь записи> (IMAGES_DIR — полный или от папки проекта)."""
@@ -150,10 +163,16 @@ def read_records(table_file: Path, conditions: list[float] | tuple[float, ...] =
         path = side.replace("\\", "/").rstrip("/")
         if not path.endswith("/" + name) and path != name:
             path = f"{path}/{name}"
+        numbers = {}
+        for i, header in enumerate(headers[:len(row)]):
+            value = _number(row[i])
+            if value is not None:
+                numbers[header] = value
         records.append(Record(
             name=name, path=path, cond_num=_number(cell(row, "cond_num")),
             start_frame=_integer(cell(row, "start_frame")), fin_frame=_integer(cell(row, "fin_frame")),
             rim=_number(cell(row, "rim")), cx=_number(cell(row, "cx")), cy=_number(cell(row, "cy")),
+            numbers=numbers,
         ))
     log.info("Таблица %s: %d записей", table_file.name, len(records))
 
@@ -165,6 +184,23 @@ def read_records(table_file: Path, conditions: list[float] | tuple[float, ...] =
             log.warning("Нет в таблице (или не подходят под CONDITIONS): %s", ", ".join(sorted(missing)))
         records = [r for r in records if r.name in names]
     return records
+
+
+def record_setting(record: Record, settings: ModuleType, name: str) -> Any:
+    """Числовая настройка name для одной записи: число из settings.py — как есть; строка — имя колонки
+    таблицы, и значение берётся из неё (у каждой записи своё). Нет числа в колонке — ValueError.
+
+    Так задают параметры, которые могут отличаться от записи к записи; сейчас так работает FPS
+    (FPS = "fps" в settings.py). Для настроек-путей и других строк эта функция не применяется.
+    """
+    value = getattr(settings, name)
+    if not isinstance(value, str):
+        return value
+    column = value.strip()
+    number = record.number(column)
+    if number is None:
+        raise ValueError(f"{record.name}: в таблице нет числа в колонке «{column}» (нужно для {name})")
+    return number
 
 
 def run_stage(stage: str, settings: ModuleType, thresholds: ModuleType,

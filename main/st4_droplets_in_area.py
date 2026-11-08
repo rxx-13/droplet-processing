@@ -30,7 +30,7 @@ import numpy as np  # noqa: E402
 
 from experiments.current import settings, thresholds  # noqa: E402
 from lib.common import files  # noqa: E402
-from lib.common.records import Record, run_stage  # noqa: E402
+from lib.common.records import Record, record_setting, run_stage  # noqa: E402
 from lib.st4.areas import (Area, area_file_name, plot_area, px_per_frame_to_m_per_s,  # noqa: E402
                            px_to_mm, tracks_in_area)
 
@@ -41,7 +41,8 @@ def process_record(record: Record, settings: ModuleType, thresholds: ModuleType)
     """st4 для одной записи: траектории из ptv_unfiltered.mat -> файлы по каждой области и _all_stat.dat."""
     if record.cx is None or record.cy is None:
         raise ValueError("в таблице не задано начало координат (колонки cx/c_x, cy/c_y)")
-    scale, fps, cx, cy = settings.SCALE_MM_PER_PX, settings.FPS, record.cx, record.cy
+    scale, cx, cy = settings.SCALE_MM_PER_PX, record.cx, record.cy
+    fps = record_setting(record, settings, "FPS")
     output = Path(settings.OUTPUT_DIR)
     tracks = files.load_cell(record.st2_dir(output) / "ptv_unfiltered.mat", "p_arr")
     out = record.st4_dir(output)

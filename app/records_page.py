@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
 from app.frame_view import PIV_VIEWS, FrameComputer, FrameScale, FrameView
 from app.params_page import CHANGED_STYLE, INVALID_STYLE, ParamsPanel
 from lib.common import files
-from lib.common.records import COLUMN_NAMES, Record, project_path
+from lib.common.records import COLUMN_NAMES, Record, project_path, record_setting
 from lib.common.table_edit import EditableTable, TableSaveError, format_value, same_value
 from lib.st1.preview import COMPUTED_VIEWS, VIEWS, FrameResult, SavedResults
 
@@ -73,7 +73,8 @@ RESULT_FILES = {"st1": ("st1_dir", "particles.mat"), "st2": ("st2_dir", "ptv_unf
                 "st4": ("st4_dir", "_all_stat.dat")}
 RIM_SLIDER_STEPS = 1000  # ползунок rim: логарифмическая шкала от 10 до 100 000 px²
 HELP = ("← →  кадр (держать — быстро)    Пробел  слайдшоу    Home End  первый / последний файл    "
-        "PgUp PgDn  запись    1–5  вид    M  капли MATLAB    колесо мыши — увеличение, перетаскивание — сдвиг")
+        "PgUp PgDn  запись    1–5  вид    M  капли MATLAB    B  удалённый бэг    "
+        "колесо мыши — увеличение, перетаскивание — сдвиг")
 
 
 def rim_to_slider(rim: float) -> int:
@@ -138,6 +139,7 @@ class RecordsPage(QWidget):
         self.number = 1  # текущий кадр — номер файла записи, с 1
         self.view_name = "frame"
         self.show_matlab = True
+        self.show_bag = False  # полупрозрачная подсветка удалённого бэга на виде «капли»
         self.matlab: tuple[list[np.ndarray], list[np.ndarray]] | None = None  # капли MATLAB по кадрам диапазона
         self.can_compute = False  # заданы кадры и rim (без них виды 2–5 не считаются)
         self.bag_points: list[tuple[float, float]] = []  # точки разметки бэга (до четырёх), px с 1
@@ -253,6 +255,13 @@ class RecordsPage(QWidget):
         self.matlab_box.setChecked(True)
         self.matlab_box.toggled.connect(self._matlab_toggled)
         views.addWidget(self.matlab_box)
+        self.bag_box = QCheckBox("удалённый бэг (B)")
+        self.bag_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.bag_box.setToolTip("Полупрозрачная подсветка того, что удалено как рим, крупные брызги и вода\n"
+                                "(вид «3 капли»). В результатах st1 маски удалённого нет — она есть только "
+                                "при расчёте кадра.")
+        self.bag_box.toggled.connect(self._bag_toggled)
+        views.addWidget(self.bag_box)
         views.addSpacing(16)
         views.addWidget(QLabel("Капли и PIV:"))
         self.source_box = QComboBox()
@@ -333,7 +342,8 @@ class RecordsPage(QWidget):
         keys = {"Right": lambda: self.step(1), "Left": lambda: self.step(-1), "Space": self.toggle_slideshow,
                 "Home": lambda: self.go(1), "End": lambda: self.go(self.count),
                 "PgDown": lambda: self.switch_record(1), "PgUp": lambda: self.switch_record(-1),
-                "M": lambda: self.matlab_box.toggle(), "Esc": self._cancel_marking}
+                "M": lambda: self.matlab_box.toggle(), "B": lambda: self.bag_box.toggle(),
+                "Esc": self._cancel_marking}
         keys.update({key: (lambda v=view: self.set_view(v)) for key, view in VIEW_KEYS.items()})
         for key, slot in keys.items():
             QShortcut(QKeySequence(key), self).activated.connect(slot)
@@ -860,7 +870,8 @@ class RecordsPage(QWidget):
             caption = self.view.show(
                 view if result is not None else "frame", frame, result, matlab=self._matlab_at(self.number),
                 arrow_scale=self.thresholds.PIV_PLOT_ARROW_SCALE, speed_max=self.thresholds.PIV_PLOT_SPEED_MAX,
-                mm_per_px=self.settings.SCALE_MM_PER_PX, fps=self.settings.FPS)
+                mm_per_px=self.settings.SCALE_MM_PER_PX, fps=record_setting(record, self.settings, "FPS"),
+                show_erased=self.show_bag)
             if result is not None and not self._computes(view):
                 text = f"из результатов st1 ({datetime.fromtimestamp(self.saved.modified):%d.%m.%Y %H:%M}): {caption}"
             text = text or caption
@@ -988,6 +999,11 @@ class RecordsPage(QWidget):
     def _matlab_toggled(self, on: bool) -> None:
         """Капли MATLAB показать / скрыть (клавиша M)."""
         self.show_matlab = on
+        self.draw()
+
+    def _bag_toggled(self, on: bool) -> None:
+        """Удалённый бэг показать / скрыть (клавиша B, вид «капли»)."""
+        self.show_bag = on
         self.draw()
 
     def toggle_slideshow(self) -> None:

@@ -38,7 +38,7 @@ from matplotlib.patches import Circle
 from scipy.io import loadmat
 
 from ..common import files
-from ..common.records import Record
+from ..common.records import Record, record_setting
 from .droplets import DropletFinder, RimRemover
 from .piv import Piv, PivGrid, PivResult, filter_piv_by_thresholds
 from .velocity import velocity_at_points
@@ -191,7 +191,8 @@ class RecordPreview:
         self.record = record
         self.frames = files.Frames(record.images_dir(Path(settings.IMAGES_DIR)))
         self.numbers = list(range(record.start_frame, record.fin_frame + 1))  # номера файлов кадров
-        self.mm_per_px, self.fps = settings.SCALE_MM_PER_PX, settings.FPS
+        self.mm_per_px = settings.SCALE_MM_PER_PX
+        self.fps = record_setting(record, settings, "FPS")  # число или имя колонки таблицы
         self.arrow_scale = thresholds.PIV_PLOT_ARROW_SCALE
         self.speed_max = thresholds.PIV_PLOT_SPEED_MAX
         self.matlab = self._load_matlab(getattr(settings, "MATLAB_RESULTS_DIR", None))

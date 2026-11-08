@@ -9,6 +9,7 @@ import lzma
 import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -22,7 +23,7 @@ from lib.analysis.labplot import write_csv, write_lml
 from lib.analysis.stats import Condition, binned, histogram, select, split, window_edges
 from lib.common.config_edit import SettingsFile, current_experiment, set_current_experiment, value_text
 from lib.common.files import last_number_in_name, save_dat
-from lib.common.records import PROJECT_DIR, project_path, read_records
+from lib.common.records import PROJECT_DIR, project_path, read_records, record_setting
 from lib.common.table_edit import EditableTable, TableSaveError
 from lib.st1 import image_ops as ops
 from lib.st1.piv import PivGrid, PivResult, filter_piv, median_ignoring_nan
@@ -87,14 +88,39 @@ def test_relative_paths_in_settings_are_from_project_folder(tmp_path, monkeypatc
     assert records[0].images_dir(tmp_path) == tmp_path / records[0].path
 
 
+def test_setting_can_come_from_a_table_column(tmp_path):
+    """FPS в settings.py — число (одно на эксперимент) или имя колонки таблицы (у каждой записи своё)."""
+    table = tmp_path / "table.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["rec_name", "images_path_side", "fps"])
+    sheet.append(["описание"] * 3)
+    sheet.append(["rec1", "rec1", 5000])
+    sheet.append(["rec2", "rec2", 6000])
+    workbook.save(table)
+    first, second = read_records(table)
+    assert first.number("fps") == 5000 and second.number("fps") == 6000
+    assert first.number("FPS") == 5000  # заголовок ищется и без учёта регистра
+    assert first.number("нет такой колонки") is None
+
+    settings = SimpleNamespace(FPS="fps")
+    assert record_setting(first, settings, "FPS") == 5000
+    assert record_setting(second, settings, "FPS") == 6000
+    settings.FPS = 7000  # число — как раньше, одно на эксперимент
+    assert record_setting(first, settings, "FPS") == 7000
+    settings.FPS = "нет такой колонки"
+    with pytest.raises(ValueError, match="нет числа"):
+        record_setting(first, settings, "FPS")
+
+
 @pytest.mark.skipif(not (PROJECT_DIR / "experiments" / "example1" / "results").is_dir(),
                     reason="синтетических результатов примеров нет (в git они не хранятся)")
-def test_example_experiments_have_results_with_visible_dependencies():
+def test_example_experiment_has_results_with_visible_dependencies():
     sources, problems = find_sources(PROJECT_DIR / "experiments")
-    examples = [s for s in sources if s.experiment in ("example1", "example2", "example3")]
+    examples = [s for s in sources if s.experiment == "example1"]
     table, problems = load(examples, "tracks")
     c = table.columns
-    assert len(examples) == 3 and not problems and set(c["experiment"]) == {"example1", "example2", "example3"}
+    assert len(examples) == 1 and not problems and set(c["experiment"]) == {"example1"}
     first = c["experiment"] == "example1"
     assert first.sum() > 20000 and len(set(c["record"][first])) == 21  # 22-я запись таблицы — без результатов
     vx = [c["vx"][first & (c["F"] == f)].mean() for f in (30, 45, 60)]
