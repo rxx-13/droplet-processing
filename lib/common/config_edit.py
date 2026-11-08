@@ -7,7 +7,8 @@ Python: число, строка, кортеж, список (как его чи
 
 Запись меняет только текст значений изменённых строк: имена, комментарии, разделы, пустые строки и концы
 строк остаются как были. Текст значения пишется так, как его набрали (0.0000001 не превращается в 1e-07);
-строки с «\\» (пути) — как r"...".
+строки с «\\» (пути) — как r"...". В settings.py числовое значение можно заменить именем колонки таблицы
+(строка, например FPS = "fps") — так задают параметры, свои у каждой записи (record_setting).
 """
 
 import ast
@@ -126,17 +127,29 @@ class SettingsFile:
         """Все значения файла с учётом правок."""
         return {name: self.value(name) for name in self.settings}
 
-    def set_text(self, name: str, text: str) -> Any:
+    def set_text(self, name: str, text: str, allow_text: bool = False) -> Any:
         """Новый текст значения name. Должен быть литералом того же вида, что в файле (число, строка,
-        кортеж, список), иначе ValueError с понятным текстом (правка тогда не меняется). Возвращает значение."""
-        value = literal(text)
+        кортеж, список), иначе ValueError с понятным текстом (правка тогда не меняется). Возвращает значение.
+
+        allow_text — для settings.py: числовое значение можно заменить именем колонки таблицы — строкой
+        без кавычек (fps) или в кавычках ("fps"). Так задают FPS = "fps" и другие параметры, которые
+        у каждой записи свои (record_setting).
+        """
+        text = text.strip()
+        try:
+            value = literal(text)
+        except ValueError:
+            if not allow_text or not text or any(char in text for char in ('(', ')', '[', ']', '{', '}', '"', "'", ',')):
+                raise
+            value, text = text, value_text(text)  # имя колонки таблицы
         old = self.settings[name].value
-        if kind_of(value) != kind_of(old):
-            raise ValueError(f"{name}: нужно {kind_of(old)}, а введено {kind_of(value)}")
-        if text.strip() == self.settings[name].text:
+        kinds = kind_of(old), kind_of(value)
+        if kinds[0] != kinds[1] and not (allow_text and kinds == ("число", "строка")):
+            raise ValueError(f"{name}: нужно {kinds[0]}, а введено {kinds[1]}")
+        if text == self.settings[name].text:
             self.edits.pop(name, None)
         else:
-            self.edits[name] = text.strip()
+            self.edits[name] = text
         return value
 
     def changed(self, name: str | None = None) -> bool:

@@ -10,8 +10,8 @@
     bag_hight, bag_length, bag_frame  — высота и длина бэга, мм, и кадр, на котором они измерены
                                         (заполняет приложение; стадиям не нужны);
     fps                               — кадров в секунду записи (необязательная: читается, если в settings.py
-                                        FPS — не число, а имя этой колонки; так же можно задать и другие
-                                        числовые настройки — record_setting).
+                                        FPS — не число, а имя этой колонки; так же задаются SCALE_MM_PER_PX,
+                                        SURFACE_ROW, BACKGROUND_FRAME — record_setting).
 Строки без rec_name или images_path_side пропускаются.
 
 Путь записи: images_path_side, а если он не оканчивается именем записи — images_path_side\\rec_name.
@@ -190,8 +190,9 @@ def record_setting(record: Record, settings: ModuleType, name: str) -> Any:
     """Числовая настройка name для одной записи: число из settings.py — как есть; строка — имя колонки
     таблицы, и значение берётся из неё (у каждой записи своё). Нет числа в колонке — ValueError.
 
-    Так задают параметры, которые могут отличаться от записи к записи; сейчас так работает FPS
-    (FPS = "fps" в settings.py). Для настроек-путей и других строк эта функция не применяется.
+    Так задают параметры, которые могут отличаться от записи к записи: FPS (FPS = "fps" в settings.py),
+    SCALE_MM_PER_PX, SURFACE_ROW, BACKGROUND_FRAME. Для настроек-путей и других строк эта функция
+    не применяется.
     """
     value = getattr(settings, name)
     if not isinstance(value, str):

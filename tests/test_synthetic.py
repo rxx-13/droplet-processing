@@ -322,13 +322,23 @@ def test_app_settings_panel_recomputes_frame_and_saves_files(run, tmp_path):
     from app.window import MainWindow
 
     application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
-    settings = _module_file(tmp_path / "settings.py", {**vars(run.settings), "OUTPUT_DIR": str(tmp_path / "out")})
+    table = tmp_path / "table.xlsx"
+    workbook = load_workbook(run.settings.TABLE_FILE)
+    sheet = workbook.active
+    sheet.cell(1, 9).value, sheet.cell(2, 9).value, sheet.cell(3, 9).value = "fps", "кадров в секунду", 5000
+    workbook.save(table)
+    settings = _module_file(tmp_path / "settings.py", {**vars(run.settings), "TABLE_FILE": str(table),
+                                                       "OUTPUT_DIR": str(tmp_path / "out")})
     thresholds = _module_file(tmp_path / "thresholds.py", vars(THRESHOLDS))
     window = MainWindow(settings, thresholds, workers=0)
     page, panel = window.records, window.records.params
     page.go(3)
     page.set_view("droplets")
     assert "капель: Python 15" in page.info.text()
+
+    panel.set_text("settings", "FPS", "fps")  # число заменяется именем колонки таблицы
+    page.apply_parameters()
+    assert panel.files["settings"].value("FPS") == "fps" and "капель: Python 15" in page.info.text()
 
     panel.set_text("thresholds", "RIM_GRAY_RANGE", "(-300, -200)")  # всё светлее границы — капель нет
     page.apply_parameters()  # то же делает таймер после правки
@@ -346,6 +356,7 @@ def test_app_settings_panel_recomputes_frame_and_saves_files(run, tmp_path):
     text = (tmp_path / "thresholds.py").read_text(encoding="utf-8")
     assert "RIM_GRAY_RANGE = (-300, -200)  # rim_gray_range\n" in text and "RIM_BINARIZE_THRESHOLD = 0.15  #" in text
     assert thresholds.RIM_GRAY_RANGE == (-300, -200)  # модуль в памяти — как файл
+    assert 'FPS = "fps"' in (tmp_path / "settings.py").read_text(encoding="utf-8") and settings.FPS == "fps"
 
     panel.set_text("thresholds", "RIM_GRAY_RANGE", "(-110, 0)")
     panel.discard()  # «Вернуть как в файлах»

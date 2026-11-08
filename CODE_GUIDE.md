@@ -180,7 +180,7 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | `Record` | одна строка таблицы | `read_records`, `EditableTable.record` | — | строка rec_list |
 | `Record.has_frames` | задан ли диапазон кадров | `run_stage`, `Viewer`, `EditableTable.filled`, `RecordsPage`, tests | — | — |
 | `Record.number` | число из колонки таблицы по заголовку (точное или без учёта регистра) | `record_setting`, tests | — | — |
-| `record_setting` | числовая настройка для записи: число из settings.py или значение колонки таблицы (если там строка) | main/st4, `RecordPreview`, `RecordsPage`, tests | `Record.number` | — |
+| `record_setting` | числовая настройка для записи: число из settings.py или значение колонки таблицы (если там строка) | main/st1, main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage`, tests | `Record.number` | — |
 | `Record.images_dir` | папка кадров записи (IMAGES_DIR — полный или от папки проекта) | main/st1, `RecordPreview`, `RecordsPage` | — | fullfile(images_folder_base, …) |
 | `Record.st1_dir` | папка результата st1 (OUTPUT_DIR — полный или от папки проекта) | main/st1, main/st2, `RecordPreview._load_matlab`, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st1 |
 | `Record.st2_dir` | папка результата st2 | main/st2, main/st4, `RecordsPage`, `ResultsPage`, tests | — | outputFolder st2 |
@@ -236,7 +236,7 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | `SettingsFile.text` | текст значения с учётом правок | `SettingsFile`, `ParamsPanel` | — | — |
 | `SettingsFile.value` | значение с учётом правок | `SettingsFile`, `ParamsPanel.save`, tests | `literal` | — |
 | `SettingsFile.values` | все значения файла с учётом правок | `ParamsPanel.working` | `SettingsFile.value` | — |
-| `SettingsFile.set_text` | правка значения (литерал того же вида, что в файле) | `ParamsPanel`, tests | `literal`, `kind_of` | — |
+| `SettingsFile.set_text` | правка значения (литерал того же вида, что в файле; в settings.py число можно заменить именем колонки таблицы) | `ParamsPanel`, tests | `literal`, `kind_of` | — |
 | `SettingsFile.changed` | есть ли правки (у значения или в файле) | `ParamsPanel` | — | — |
 | `SettingsFile.discard` | забыть правки | `ParamsPanel.discard` | — | — |
 | `SettingsFile.save` | записать в файл только изменённые значения, перечитать | `ParamsPanel.save`, tests | `parse_settings`, `literal` | — |
@@ -498,10 +498,10 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | `OUTPUT_DIR` | settings | main/st1, main/st2, main/st4, `RecordsPage`, `sources_of` | куда писать результаты; приложение — отметки st1/st2/st4 и копии таблицы (`table_backups`) |
 | `CONDITIONS` | settings | `run_stage`, `Viewer` | какие условия обрабатывать |
 | `RECORDS` | settings | `run_stage`, `Viewer` | какие записи обрабатывать |
-| `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с |
+| `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с; число или имя колонки таблицы (`record_setting`) |
 | `FPS` | settings | main/st4, `RecordPreview`, `RecordsPage` | перевод px/кадр → м/с; число (одно на эксперимент) или имя колонки таблицы (`FPS = "fps"`) — тогда у каждой записи своё (`record_setting`) |
-| `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода |
-| `BACKGROUND_FRAME` | settings | main/st1, `compute_frame` | какой кадр — фон |
+| `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода; число или имя колонки таблицы (`record_setting`) |
+| `BACKGROUND_FRAME` | settings | main/st1, `compute_frame` | какой кадр — фон; число или имя колонки таблицы (`record_setting`) |
 | `ERASE_REGIONS` | settings | `RimRemover` (main/st1, `compute_frame`) | вручную закрашиваемые области |
 | `AREA_X` | settings | main/st4 | границы областей по x |
 | `AREA_HEIGHTS` | settings | main/st4 | высоты областей |

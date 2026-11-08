@@ -266,6 +266,23 @@ def test_settings_file_writes_only_changed_values_and_keeps_comments(tmp_path):
     assert path.read_bytes().endswith(outside) and f.edits
 
 
+def test_settings_file_can_change_a_number_to_a_table_column(tmp_path):
+    """В settings.py число можно заменить именем колонки таблицы — с кавычками или без (FPS = "fps")."""
+    path = tmp_path / "settings.py"
+    path.write_text("FPS = 5000  # кадров в секунду\nSCALE_MM_PER_PX = 0.04  # масштаб\n", encoding="utf-8")
+    f = SettingsFile(path)
+    f.set_text("FPS", "fps", allow_text=True)  # без кавычек, как набирают в приложении
+    assert f.value("FPS") == "fps" and f.text("FPS") == '"fps"'
+    f.set_text("FPS", '"fps"', allow_text=True)  # в кавычках — тоже годится
+    assert f.value("FPS") == "fps"
+    f.set_text("FPS", "частота кадров", allow_text=True)  # в заголовке колонки может быть пробел
+    assert f.value("FPS") == "частота кадров"
+    with pytest.raises(ValueError, match="нужно число"):
+        f.set_text("FPS", "(1, 2)", allow_text=True)
+    with pytest.raises(ValueError):
+        f.set_text("FPS", "fps")  # без allow_text — по-прежнему только число
+
+
 def test_current_experiment_is_switched_in_current_py(tmp_path):
     path = tmp_path / "current.py"
     path.write_text("# Какой эксперимент.\n#   from experiments.x import settings_2 as settings, thresholds\n"

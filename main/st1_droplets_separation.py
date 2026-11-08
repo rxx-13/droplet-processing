@@ -30,7 +30,7 @@ import numpy as np  # noqa: E402
 
 from experiments.current import settings, thresholds  # noqa: E402
 from lib.common import files  # noqa: E402
-from lib.common.records import Record, run_stage  # noqa: E402
+from lib.common.records import Record, record_setting, run_stage  # noqa: E402
 from lib.st1.droplets import DropletFinder, RimRemover  # noqa: E402
 from lib.st1.piv import Piv, filter_piv_by_thresholds  # noqa: E402
 from lib.st1.velocity import velocity_at_points  # noqa: E402
@@ -44,9 +44,10 @@ def process_record(record: Record, settings: ModuleType, thresholds: ModuleType)
     if record.rim is None:
         raise ValueError("в таблице не задан порог рима (колонка rim / rim_new)")
     frames = files.Frames(record.images_dir(Path(settings.IMAGES_DIR)))
-    background = frames.gray(settings.BACKGROUND_FRAME)
+    background = frames.gray(int(record_setting(record, settings, "BACKGROUND_FRAME")))
 
-    rim_remover = RimRemover.from_thresholds(t, settings.SURFACE_ROW, settings.ERASE_REGIONS)
+    rim_remover = RimRemover.from_thresholds(t, int(record_setting(record, settings, "SURFACE_ROW")),
+                                             settings.ERASE_REGIONS)
     finder = DropletFinder.from_thresholds(t)
     piv = Piv.from_thresholds(t, frames.width, frames.height)
 

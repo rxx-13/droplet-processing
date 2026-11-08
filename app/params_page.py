@@ -239,7 +239,7 @@ class ParamsPanel(QWidget):
                 for name, text in old[kind][1].items():
                     if name in self.files[kind].settings:
                         try:
-                            self.files[kind].set_text(name, text)
+                            self.files[kind].set_text(name, text, allow_text=kind == "settings")
                         except ValueError:
                             pass
         self._build()
@@ -303,7 +303,7 @@ class ParamsPanel(QWidget):
         """Правка значения в поле или ползунком: проверить, запомнить, пересчитать кадр."""
         field = self.fields[(kind, name)]
         try:
-            self.files[kind].set_text(name, text)
+            self.files[kind].set_text(name, text, allow_text=kind == "settings")
         except ValueError as error:
             field.mark(False, str(error))
             return

@@ -712,7 +712,7 @@ class RecordsPage(QWidget):
         n = len(points)
         guide = ("vertical", points[0][0]) if n == 1 else ("horizontal", y) if n == 3 else None
         self.view.set_bag(points, guide)
-        scale = self.settings.SCALE_MM_PER_PX
+        scale = record_setting(self.table.record(self.i), self.settings, "SCALE_MM_PER_PX")
         if n < 4:
             done = f"высота {abs(points[1][1] - points[0][1]) * scale:.2f} мм; " if n >= 2 else ""
             self.message.emit(f"Размер бэга, точка {n + 1} из 4: {done}{BAG_STEPS[n]} (Esc — отмена)")
@@ -820,8 +820,9 @@ class RecordsPage(QWidget):
             return
         s, t = self.settings, self.thresholds
         values = {name: getattr(t, name) for name in dir(t) if name.isupper()}
-        self.computer.configure(str(record.images_dir(Path(s.IMAGES_DIR))), self.count, s.BACKGROUND_FRAME,
-                                record.rim, s.SURFACE_ROW, s.ERASE_REGIONS, values)
+        self.computer.configure(str(record.images_dir(Path(s.IMAGES_DIR))), self.count,
+                                int(record_setting(record, s, "BACKGROUND_FRAME")), record.rim,
+                                int(record_setting(record, s, "SURFACE_ROW")), s.ERASE_REGIONS, values)
 
     def recompute(self) -> None:
         """Пересчитать кадры текущей записи с текущими rim, настройками и порогами (после их правки — сам,
@@ -870,7 +871,8 @@ class RecordsPage(QWidget):
             caption = self.view.show(
                 view if result is not None else "frame", frame, result, matlab=self._matlab_at(self.number),
                 arrow_scale=self.thresholds.PIV_PLOT_ARROW_SCALE, speed_max=self.thresholds.PIV_PLOT_SPEED_MAX,
-                mm_per_px=self.settings.SCALE_MM_PER_PX, fps=record_setting(record, self.settings, "FPS"),
+                mm_per_px=record_setting(record, self.settings, "SCALE_MM_PER_PX"),
+                fps=record_setting(record, self.settings, "FPS"),
                 show_erased=self.show_bag)
             if result is not None and not self._computes(view):
                 text = f"из результатов st1 ({datetime.fromtimestamp(self.saved.modified):%d.%m.%Y %H:%M}): {caption}"

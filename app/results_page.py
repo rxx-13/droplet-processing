@@ -23,6 +23,7 @@ from scipy.io import loadmat
 
 from app.records_page import RESULT_FILES, RecordsPage
 from lib.common import files
+from lib.common.records import record_setting
 from lib.st2.tracking import draw_tracks
 from lib.st4.areas import Area, area_file_name, draw_area, tracks_in_area
 
@@ -225,7 +226,8 @@ class ResultsPage(QWidget):
             means, inside = tracks_in_area(self.tracks, area)
             top, bottom = self.area_figure.subplots(2, 1)
             t, s = self.records.thresholds, self.records.settings
-            draw_area(top, bottom, self.tracks, inside, means, area, s.SCALE_MM_PER_PX, record.cx, record.cy,
+            draw_area(top, bottom, self.tracks, inside, means, area,
+                      record_setting(record, s, "SCALE_MM_PER_PX"), record.cx, record.cy,
                       t.AREA_PLOT_ARROW_SCALE, t.AREA_PLOT_Y_LIMITS_MM)
             self.area_info.setText(f"Область: высота {height_mm:g} мм, нижний край {low_edge_mm:g} мм; "
                                    f"траекторий {means.shape[0]} (по строке на траекторию ниже)")

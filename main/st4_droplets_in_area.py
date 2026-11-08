@@ -41,7 +41,7 @@ def process_record(record: Record, settings: ModuleType, thresholds: ModuleType)
     """st4 для одной записи: траектории из ptv_unfiltered.mat -> файлы по каждой области и _all_stat.dat."""
     if record.cx is None or record.cy is None:
         raise ValueError("в таблице не задано начало координат (колонки cx/c_x, cy/c_y)")
-    scale, cx, cy = settings.SCALE_MM_PER_PX, record.cx, record.cy
+    scale, cx, cy = record_setting(record, settings, "SCALE_MM_PER_PX"), record.cx, record.cy
     fps = record_setting(record, settings, "FPS")
     output = Path(settings.OUTPUT_DIR)
     tracks = files.load_cell(record.st2_dir(output) / "ptv_unfiltered.mat", "p_arr")

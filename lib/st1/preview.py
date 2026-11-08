@@ -191,8 +191,8 @@ class RecordPreview:
         self.record = record
         self.frames = files.Frames(record.images_dir(Path(settings.IMAGES_DIR)))
         self.numbers = list(range(record.start_frame, record.fin_frame + 1))  # номера файлов кадров
-        self.mm_per_px = settings.SCALE_MM_PER_PX
-        self.fps = record_setting(record, settings, "FPS")  # число или имя колонки таблицы
+        self.mm_per_px = record_setting(record, settings, "SCALE_MM_PER_PX")  # число или имя колонки таблицы
+        self.fps = record_setting(record, settings, "FPS")
         self.arrow_scale = thresholds.PIV_PLOT_ARROW_SCALE
         self.speed_max = thresholds.PIV_PLOT_SPEED_MAX
         self.matlab = self._load_matlab(getattr(settings, "MATLAB_RESULTS_DIR", None))
@@ -201,8 +201,9 @@ class RecordPreview:
         self._jobs = {k: FrameJob(
             k=k, images_dir=str(record.images_dir(Path(settings.IMAGES_DIR))), frame_number=self.numbers[k - 1],
             pair=None if n < 2 else (self.numbers[min(k, n - 1) - 1], self.numbers[min(k, n - 1)]),
-            background_number=settings.BACKGROUND_FRAME, rim_area=record.rim,
-            surface_row=settings.SURFACE_ROW, erase_regions=tuple(settings.ERASE_REGIONS),
+            background_number=int(record_setting(record, settings, "BACKGROUND_FRAME")), rim_area=record.rim,
+            surface_row=int(record_setting(record, settings, "SURFACE_ROW")),
+            erase_regions=tuple(settings.ERASE_REGIONS),
             thresholds=values) for k in range(1, n + 1)}
         self._results: dict[int, FrameResult] = {}
         self._futures: dict[int, Future] = {}
