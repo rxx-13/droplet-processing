@@ -255,6 +255,15 @@ def test_table_edit_undo_redo_steps_groups_and_new_columns(tmp_path):
     assert not table.dirty and table.value(0, "rim") == 250 and "ustar" in table.headers
 
 
+def test_table_edit_fill_right_is_one_step(tmp_path):
+    path = _table(tmp_path / "t.xlsx", TABLE_HEADERS, [[1, "0201", "w", 80, 162, 200, 28, 883]])
+    table = EditableTable(path)
+    cells = table.fill_right("c_x", ["c_y"], [0])  # значение c_x — в c_y
+    assert cells == [(0, "c_y", 28)] and table.value(0, "c_y") == 28
+    table.undo()
+    assert table.value(0, "c_y") == 883
+
+
 def test_table_edit_does_not_overwrite_rows_changed_in_excel_or_open_file(tmp_path, monkeypatch):
     path = _table(tmp_path / "t.xlsx", TABLE_HEADERS, [[1, "0201", "w"], [1, "0202", "w"]])
     table = EditableTable(path)

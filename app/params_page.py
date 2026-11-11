@@ -9,7 +9,9 @@
 
 «Сохранить настройки» записывает в файлы только изменённые значения (комментарии и остальное остаются);
 «Вернуть как в файлах» — забыть правки. Пока правки не сохранены, скрипты main/ работают со значениями
-из файлов. Логика без окон — lib/common/config_edit.py.
+из файлов. Ctrl+Z / Ctrl+Y приложения отменяют и повторяют правки значений по шагам: правки одного
+значения подряд (набор, ползунок) — один шаг; шаги идут в общую историю (app/undo.py). Логика без окон —
+lib/common/config_edit.py.
 """
 
 import html
@@ -67,6 +69,7 @@ class ParamField(QWidget):
     kind — "settings" или "thresholds"; setting — значение из файла (config_edit.Setting)."""
 
     edited = Signal(str, str, str)  # kind, имя, новый текст значения (как в файле)
+    finished = Signal()  # поле доделали: ушли из него или отпустили ползунок (серия правок закончена)
 
     def __init__(self, kind: str, setting: Setting) -> None:
         super().__init__()
@@ -79,6 +82,7 @@ class ParamField(QWidget):
         self.edit = QLineEdit()
         self.edit.setToolTip(setting.note or setting.comment)
         self.edit.textEdited.connect(self._typed)
+        self.edit.editingFinished.connect(self.finished.emit)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(2)
@@ -93,6 +97,7 @@ class ParamField(QWidget):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             slider.valueChanged.connect(lambda position, i=i: self._slid(i, position))
+            slider.sliderReleased.connect(self.finished.emit)
             row = QHBoxLayout()
             if len(numbers) > 1:
                 row.addWidget(QLabel(f"{i + 1}:"))
@@ -173,13 +178,16 @@ class ParamsPanel(QWidget):
     """Панель «Настройки»: значения settings.py и thresholds.py эксперимента с несохранёнными правками.
 
     load — открыть файлы эксперимента (модули settings и thresholds); working — значения с правками
-    (для расчёта кадров); save — записать правки в файлы. Если настройки не из файлов (например, в тестах),
-    панель только сообщает об этом, а working возвращает их как есть.
+    (для расчёта кадров); save — записать правки в файлы; undo / redo — отменить / повторить правку
+    значения (Ctrl+Z / Ctrl+Y приложения; правки одного значения подряд — один шаг). Если настройки
+    не из файлов (например, в тестах), панель только сообщает об этом, а working возвращает их как есть.
     """
 
     edited = Signal()  # значения с правками изменились — пересчитать кадр
     changed = Signal()  # изменились несохранённые правки
     message = Signal(str)  # сообщение для строки состояния
+    step_made = Signal(str)  # новая правка для общей истории отмены (имя значения)
+    history_reset = Signal()  # история отмены забыта (сохранение, отказ от правок, другие файлы)
 
     def __init__(self) -> None:
         super().__init__()
@@ -187,6 +195,9 @@ class ParamsPanel(QWidget):
         self.files: dict[str, SettingsFile] = {}
         self.fields: dict[tuple[str, str], ParamField] = {}
         self.headers: list[tuple[QLabel, list[ParamField]]] = []  # заголовки разделов и их поля (для поиска)
+        self.history: list[tuple[str, str, str, str]] = []  # шаги отмены: kind, имя, текст до, после
+        self.redo_history: list[tuple[str, str, str, str]] = []
+        self._merge: tuple[str, str] | None = None  # правки этого значения подряд — один шаг
         self.where = QLabel()
         self.where.setWordWrap(True)
         self.search = QLineEdit()
@@ -226,7 +237,8 @@ class ParamsPanel(QWidget):
         return any(f.changed() for f in self.files.values())
 
     def load(self, settings: ModuleType, thresholds: ModuleType) -> None:
-        """Открыть файлы эксперимента. Если это те же файлы, несохранённые правки остаются (если ещё подходят)."""
+        """Открыть файлы эксперимента. Если это те же файлы, несохранённые правки и история отмены
+        остаются (если ещё подходят); другие файлы — история забывается."""
         old = {kind: (f.path, dict(f.edits)) for kind, f in self.files.items()}
         self.modules = {"settings": settings, "thresholds": thresholds}
         self.files = {}
@@ -242,6 +254,10 @@ class ParamsPanel(QWidget):
                             self.files[kind].set_text(name, text, allow_text=kind == "settings")
                         except ValueError:
                             pass
+        same_files = ({kind: f.path for kind, f in self.files.items()}
+                      == {kind: path for kind, (path, _) in old.items()})
+        if not same_files:
+            self._reset_history()
         self._build()
 
     def _build(self) -> None:
@@ -276,6 +292,7 @@ class ParamsPanel(QWidget):
                     self.headers.append((header, section_fields))
                 field = ParamField(kind, setting)
                 field.edited.connect(self._edited)
+                field.finished.connect(self._break_merge)
                 field.show_text(f.text(setting.name), f.changed(setting.name))
                 self.form.addWidget(field)
                 self.fields[(kind, setting.name)] = field
@@ -300,17 +317,82 @@ class ParamsPanel(QWidget):
         self.revert_button.setEnabled(n > 0)
 
     def _edited(self, kind: str, name: str, text: str) -> None:
-        """Правка значения в поле или ползунком: проверить, запомнить, пересчитать кадр."""
+        """Правка значения в поле или ползунком: проверить, запомнить шаг отмены, пересчитать кадр."""
         field = self.fields[(kind, name)]
+        before = self.files[kind].text(name)
         try:
             self.files[kind].set_text(name, text, allow_text=kind == "settings")
         except ValueError as error:
             field.mark(False, str(error))
             return
-        field.show_text(self.files[kind].text(name), self.files[kind].changed(name), keep_text=True)
+        after = self.files[kind].text(name)
+        field.show_text(after, self.files[kind].changed(name), keep_text=True)
+        self._update_counts()
+        if after != before:
+            self._record(kind, name, before, after)
+        self.edited.emit()
+        self.changed.emit()
+
+    def _record(self, kind: str, name: str, before: str, after: str) -> None:
+        """Запомнить шаг отмены; правки одного значения подряд (набор, ползунок) — один шаг."""
+        if self._merge == (kind, name) and self.history:
+            self.history[-1] = (kind, name, self.history[-1][2], after)
+        else:
+            self.history.append((kind, name, before, after))
+            self._merge = (kind, name)
+            self.step_made.emit(name)
+        self.redo_history.clear()
+
+    def _break_merge(self) -> None:
+        """Закончить серию правок одного значения: следующая правка — новый шаг отмены."""
+        self._merge = None
+
+    def undo(self) -> bool:
+        """Отменить последнюю правку значения (Ctrl+Z приложения); False — отменять нечего."""
+        self._break_merge()
+        if not self.history:
+            return False
+        kind, name, before, _ = self.history[-1]
+        if not self._apply(kind, name, before):
+            self.history.pop()
+            return False
+        self.redo_history.append(self.history.pop())
+        return True
+
+    def redo(self) -> bool:
+        """Повторить отменённую правку значения; False — повторять нечего."""
+        self._break_merge()
+        if not self.redo_history:
+            return False
+        kind, name, _, after = self.redo_history[-1]
+        if not self._apply(kind, name, after):
+            self.redo_history.pop()
+            return False
+        self.history.append(self.redo_history.pop())
+        return True
+
+    def _apply(self, kind: str, name: str, text: str) -> bool:
+        """Поставить значение name текстом text (как в файле), не записывая шаг в историю."""
+        f = self.files[kind]
+        try:
+            f.set_text(name, text, allow_text=kind == "settings")
+        except (KeyError, ValueError):
+            return False
+        field = self.fields.get((kind, name))
+        if field is not None:
+            field.show_text(f.text(name), f.changed(name))
         self._update_counts()
         self.edited.emit()
         self.changed.emit()
+        return True
+
+    def _reset_history(self) -> None:
+        """Забыть историю отмены (правки сохранены, забыты или открыты другие файлы)."""
+        if not self.history and not self.redo_history:
+            self._merge = None
+            return
+        self.history, self.redo_history, self._merge = [], [], None
+        self.history_reset.emit()
 
     def set_text(self, kind: str, name: str, text: str) -> None:
         """Правка значения name (текст — как в файле), как если бы её набрали в поле."""
@@ -335,9 +417,10 @@ class ParamsPanel(QWidget):
         return result[0], result[1]
 
     def discard(self) -> None:
-        """Забыть правки («Вернуть как в файлах»)."""
+        """Забыть правки («Вернуть как в файлах») и историю отмены."""
         for f in self.files.values():
             f.discard()
+        self._reset_history()
         self._build()
         self.edited.emit()
         self.changed.emit()
@@ -354,6 +437,7 @@ class ParamsPanel(QWidget):
             for name in names:  # модуль в памяти — как файл (без перезапуска)
                 setattr(self.modules[kind], name, f.value(name))
             saved += names
+        self._reset_history()
         self._build()
         self.changed.emit()
         self.message.emit(f"Настройки сохранены: {', '.join(saved)}" if saved else "Несохранённых настроек нет")

@@ -24,7 +24,8 @@
 Правки хранятся в памяти (lib/common/table_edit.py) и пишутся в xlsx только по «Сохранить в таблицу»
 (Ctrl+S): только изменённые ячейки; перед первой записью за сеанс — копия таблицы в
 <OUTPUT_DIR>/table_backups. Ctrl+Z отменяет последнюю правку по шагам (Ctrl+Y — повторить): набор в поле,
-движение ползунка rim и правка нескольких записей — каждый одним шагом; после сохранения отменять нечего.
+движение ползунка rim, правка нескольких записей — каждый одним шагом; шаги таблицы и панели «Настройки»
+идут в общем порядке (app/undo.py, UndoManager). После сохранения отменять нечего.
 
 Связь с окном полной таблицы: щелчок в поле справа сообщает сигналом column_focused его колонку (окно
 подсвечивает столбец); щелчок по ячейке в окне вызывает highlight_field — подсвечивает поле в сайдбаре
@@ -55,6 +56,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
 from app.frame_view import PIV_VIEWS, FrameComputer, FrameScale, FrameView
 from app.params_page import CHANGED_STYLE, INVALID_STYLE, ParamsPanel
 from app.table_editor import TableEditor
+from app.undo import UndoManager
 from lib.common import files
 from lib.common.records import COLUMN_NAMES, Record, project_path, record_setting
 from lib.common.table_edit import EditableTable, TableSaveError, format_value, same_value
@@ -167,6 +169,7 @@ class RecordsPage(QWidget):
         self.settings, self.thresholds = settings, thresholds
         self.table: EditableTable | None = None
         self.table_editor: TableEditor | None = None  # окно полной таблицы (открывается по Ctrl+T)
+        self.undo_manager = UndoManager()  # общая отмена: правки таблицы и настроек в одном порядке
         self.highlighted_field: str | None = None  # поле, подсвеченное щелчком по ячейке полной таблицы
         self.i = -1  # текущая запись (строка таблицы, с 0); её кадры показываются
         self.selected: list[int] = []  # выделенные записи: правка поля — для всех них
@@ -341,7 +344,7 @@ class RecordsPage(QWidget):
                                         "отмена по шагам (Ctrl+T)")
         self.like_button = button("Как у предыдущих", self.fill_like_previous)
         self.save_button = button("Сохранить в таблицу (Ctrl+S)", self.save,
-                                  "Записать в xlsx изменённые ячейки; отменить правку — Ctrl+Z")
+                                  "Записать в xlsx изменённые ячейки и новые колонки")
         self.changes_label = QLabel()
         panel = QWidget()
         side = QVBoxLayout(panel)
@@ -363,6 +366,8 @@ class RecordsPage(QWidget):
         self.params.edited.connect(lambda: self.params_timer.start())
         self.params.changed.connect(self.changed.emit)
         self.params.message.connect(self.message.emit)
+        self.params.step_made.connect(self._params_step)
+        self.params.history_reset.connect(lambda: self.undo_manager.forget(self.params))
         self.side = QTabWidget()
         self.side.addTab(scroll, "Таблица")
         self.side.addTab(self.params, "Настройки")
@@ -392,11 +397,9 @@ class RecordsPage(QWidget):
         keys.update({key: (lambda v=view: self.set_view(v)) for key, view in VIEW_KEYS.items()})
         for key, slot in keys.items():
             QShortcut(QKeySequence(key), self).activated.connect(slot)
-        for key, slot in ((QKeySequence.StandardKey.Undo, self.undo), (QKeySequence.StandardKey.Redo, self.redo),
-                          ("Ctrl+Shift+Z", self.redo), ("Ctrl+T", self.open_table_editor)):
-            shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)  # не в других вкладках окна
-            shortcut.activated.connect(slot)
+        shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
+        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)  # не в других вкладках окна
+        shortcut.activated.connect(self.open_table_editor)
 
     def _build_form(self) -> None:
         """Поля всех колонок таблицы (после смены таблицы); под rim — ползунок."""
@@ -466,6 +469,7 @@ class RecordsPage(QWidget):
         path = project_path(settings.TABLE_FILE)
         same_table = self.table is not None and self.table.path == path
         old_i, old_number = self.i, self.number
+        old_table = self.table
         if not (same_table and self.table.dirty):
             try:
                 self.table = EditableTable(path)
@@ -473,6 +477,12 @@ class RecordsPage(QWidget):
                 log.exception("Не удалось прочитать таблицу")
                 self.table = None
                 self.message.emit(f"Не удалось прочитать таблицу {path}: {error}")
+        if self.table is not old_table:  # таблица перечитана — её прежние шаги отмены устарели
+            if old_table is not None:
+                old_table.on_step = None
+            self.undo_manager.forget(old_table)
+        if self.table is not None:
+            self.table.on_step = self._table_step
         self._build_form()
         self._fill_list()
         if self.table is None or not len(self.table):
@@ -562,6 +572,7 @@ class RecordsPage(QWidget):
             self.table.changes.clear()
             self.table.new_columns.clear()
             self.table.clear_history()
+        self.undo_manager.forget(self.table)
         self._build_form()
         self._fill_list()
         if len(self.table):
@@ -594,6 +605,7 @@ class RecordsPage(QWidget):
             return False
         if backup is not None:
             self.backed_up.add(path)
+        self.undo_manager.forget(self.table)  # сохранено — отменять прежние шаги нельзя
         rows = len(self.table)
         self._build_form()  # в таблице могли появиться новые колонки
         self._fill_list()
@@ -671,8 +683,7 @@ class RecordsPage(QWidget):
     def _update_counts(self) -> None:
         """Подпись «несохранённых правок» и доступность кнопки «Сохранить»."""
         n = len(self.table.changes) + len(self.table.new_columns) if self.table is not None else 0
-        self.changes_label.setText(f"Несохранённых правок: {n} (Ctrl+Z — отменить последнюю)" if n
-                                   else "Все правки сохранены")
+        self.changes_label.setText(f"Несохранённых правок: {n}" if n else "Все правки сохранены")
         self.save_button.setEnabled(n > 0)
 
     def _field_edited(self, header: str, text: str) -> None:
@@ -742,6 +753,19 @@ class RecordsPage(QWidget):
         self.message.emit(f"Растянуто: {len(cells)} ячеек")
         return len(cells)
 
+    def fill_right(self, source: str, headers: list[str], rows: list[int]) -> int:
+        """Растянуть значения колонки source по колонкам headers на строки rows (один шаг отмены);
+        возвращает число изменённых ячеек."""
+        if self.table is None:
+            return 0
+        cells = self.table.fill_right(source, headers, rows)
+        if not cells:
+            self.message.emit("Растягивать нечего: значения уже такие")
+            return 0
+        self._cells_done(cells)
+        self.message.emit(f"Растянуто: {len(cells)} ячеек")
+        return len(cells)
+
     def _cells_done(self, cells: list[tuple[int, str, Any]], keep_text: bool = False) -> None:
         """После правок ячеек: список записей, поля, подписи, сигналы и пересчёт кадра текущей записи."""
         rows = sorted({i for i, _, _ in cells})
@@ -779,19 +803,40 @@ class RecordsPage(QWidget):
     # ------------------------------------------------------------------ отмена правок
 
     def undo(self) -> bool:
-        """Отменить последнюю правку таблицы (Ctrl+Z); True — что-то отменено."""
-        step = self.table.undo() if self.table is not None else None
-        return self._history_done(step, "Отменено", "Отменять нечего")
+        """Отменить последнюю правку — таблицы или настроек, где бы ни был курсор (Ctrl+Z)."""
+        text = self.undo_manager.undo()
+        if text is not None:
+            self.message.emit(f"Отменено: {text}")
+        return text is not None
 
     def redo(self) -> bool:
-        """Повторить отменённую правку (Ctrl+Y); True — что-то повторено."""
-        step = self.table.redo() if self.table is not None else None
-        return self._history_done(step, "Повторено", "Повторять нечего")
+        """Повторить последнюю отменённую правку (Ctrl+Y)."""
+        text = self.undo_manager.redo()
+        if text is not None:
+            self.message.emit(f"Повторено: {text}")
+        return text is not None
 
-    def _history_done(self, step: Any, what: str, nothing: str) -> bool:
-        """После отмены или повтора: список, поля, полная таблица и кадр текущей записи."""
+    def _table_step(self, text: str) -> None:
+        """Новая правка таблицы — в общую историю отмены приложения."""
+        self.undo_manager.record(self.table, text, self._undo_table, self._redo_table)
+
+    def _params_step(self, name: str) -> None:
+        """Новая правка настроек — в общую историю отмены приложения."""
+        self.undo_manager.record(self.params, name, self.params.undo, self.params.redo)
+
+    def _undo_table(self) -> bool:
+        """Отменить шаг таблицы (вызывает общая отмена приложения)."""
+        step = self.table.undo() if self.table is not None else None
+        return self._history_done(step)
+
+    def _redo_table(self) -> bool:
+        """Повторить шаг таблицы (вызывает общая отмена приложения)."""
+        step = self.table.redo() if self.table is not None else None
+        return self._history_done(step)
+
+    def _history_done(self, step: Any) -> bool:
+        """После отмены или повтора шага таблицы: список, поля, полная таблица и кадр текущей записи."""
         if self.table is None or step is None:
-            self.message.emit(nothing)
             return False
         columns = [header for header, _ in step.columns]
         rows = sorted({edit.i for edit in step.edits})
@@ -814,12 +859,6 @@ class RecordsPage(QWidget):
         if self.i >= 0:
             for header in {edit.header for edit in step.edits if edit.i == self.i}:
                 self._current_values_changed(header)
-        if columns:
-            self.message.emit(f"{what}: добавление колонки {', '.join(columns)}")
-        else:
-            headers = sorted({edit.header for edit in step.edits})
-            names = ", ".join(headers[:3]) + ("…" if len(headers) > 3 else "")
-            self.message.emit(f"{what}: {names} ({len(step.edits)} яч.)" if headers else what)
         return True
 
     def add_column(self, header: str, description: str = "") -> bool:

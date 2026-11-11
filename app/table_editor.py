@@ -8,12 +8,13 @@
 Что можно:
 * менять любую ячейку двойным щелчком или набором с клавиатуры (запятая — тоже десятичный знак);
 * добавлять колонки: кнопка «Добавить колонку…», у новой колонки есть имя и описание (2-я строка таблицы);
-* растягивать значения: выделить ячейки и потянуть за синий квадратик в правом нижнем углу выделения
-  (вниз или вверх — источником берётся крайняя строка выделения с противоположной стороны), либо Ctrl+D —
-  значение верхней строки выделения на все его строки, а если выделена одна ячейка — до конца таблицы;
-  Delete очищает выделенные ячейки;
-* отменять и повторять правки по шагам (Ctrl+Z, Ctrl+Y): одна правка ячейки, несколько ячеек сразу или
-  добавленная колонка — один шаг; «Вернуть как в файлах» забывает все правки сразу (с подтверждением);
+* растягивать значения как в Excel: выделить ячейки и потянуть за синий квадратик в правом нижнем углу
+  выделения вниз, вверх, вправо или влево — значения крайней строки (столбца) выделения уходят на строки
+  (столбцы), до которых дотянули; то же с клавиатуры: Ctrl+D — от верхней строки выделения вниз (одна
+  ячейка — до конца таблицы), Ctrl+R — от левого столбца вправо. Если во всём выделении заполнена одна
+  ячейка, её значение идёт на всё выделение. Delete очищает выделенные ячейки;
+* отменять и повторять правки по шагам (Ctrl+Z, Ctrl+Y приложения): одна правка ячейки, несколько ячеек
+  сразу или добавленная колонка — один шаг; «Вернуть как в файлах» забывает все правки сразу (с подтверждением);
 * видеть несохранённые правки жёлтым, как в сайдбаре; у изменённой ячейки в подсказке — значение из файла.
 
 Связь с сайдбаром ненавязчивая: щелчок в поле справа подсвечивает его столбец здесь; щелчок по ячейке
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialog
                                QRubberBand, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
-from lib.common.table_edit import format_value
+from lib.common.table_edit import format_value, is_empty
 
 CHANGED_COLOR = QColor("#fff1b8")  # несохранённая правка — как в сайдбаре
 HIGHLIGHT_HEADER_COLOR = QColor("#dbe8fa")  # заголовок столбца, выбранного в сайдбаре
@@ -55,17 +56,18 @@ class ColumnHighlightDelegate(QStyledItemDelegate):
 
 class FillHandle(QWidget):
     """Синий квадратик в правом нижнем углу выделения: потянуть — растянуть значения (как в Excel).
-    Источник — крайняя строка выделения с противоположной стороны: тянем вниз — верхняя, вверх — нижняя."""
+    Источник — крайняя строка (столбец) выделения с противоположной стороны: тянем вниз — верхняя строка,
+    вверх — нижняя, вправо — левый столбец, влево — правый."""
 
     def __init__(self, grid: "TableGrid") -> None:
         super().__init__(grid.viewport())
         self.grid = grid
         self.dragging = False
-        self.setFixedSize(7, 7)
+        self.setFixedSize(9, 9)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setStyleSheet(HANDLE_STYLE)
-        self.setToolTip("Потяните вниз или вверх, чтобы растянуть значения выделения")
+        self.setToolTip("Потяните вниз, вверх, вправо или влево, чтобы растянуть значения выделения")
         self.hide()
 
     def mousePressEvent(self, event: Any) -> None:
@@ -74,16 +76,16 @@ class FillHandle(QWidget):
             self.dragging = self.grid.fill_start()
 
     def mouseMoveEvent(self, event: Any) -> None:
-        """Пока тянут — показать, какие строки будут заполнены."""
+        """Пока тянут — показать, какие строки или столбцы будут заполнены."""
         if self.dragging:
-            self.grid.fill_preview(self.grid.rowAt(self._point(event).y()))
+            self.grid.fill_preview(self._point(event))
 
     def mouseReleaseEvent(self, event: Any) -> None:
-        """Отпустили — растянуть значения до строки под курсором."""
+        """Отпустили — растянуть значения до строки (столбца) под курсором."""
         if not self.dragging:
             return
         self.dragging = False
-        self.grid.fill_finish(self.grid.rowAt(self._point(event).y()))
+        self.grid.fill_finish(self._point(event))
 
     def _point(self, event: Any) -> QPoint:
         """Точка события в координатах таблицы (не квадратика)."""
@@ -93,7 +95,8 @@ class FillHandle(QWidget):
 class TableGrid(QTableWidget):
     """Таблица ячеек с маркером растягивания в углу выделения (как в Excel) и клавишей Delete."""
 
-    fill_requested = Signal(int, int, int, object)  # исходная строка, первая и последняя строки, столбцы
+    fill_rows_requested = Signal(int, int, int, object)  # строка-источник, первая и последняя строки, столбцы
+    fill_cols_requested = Signal(int, int, int, object)  # столбец-источник, первый и последний, строки
     delete_requested = Signal()  # Delete — очистить выделенные ячейки
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -101,7 +104,7 @@ class TableGrid(QTableWidget):
         self.handle = FillHandle(self)
         self.band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
         self.band.setStyleSheet("background: rgba(47, 111, 208, 40); border: 1px solid #2f6fd0;")
-        self._fill: tuple[int, int, list[int]] | None = None  # (первая строка, последняя, столбцы)
+        self._anchor: tuple[int, int, int, int] | None = None  # выделение: верх, низ, лево, право
         self.itemSelectionChanged.connect(self.update_handle)
         self.currentCellChanged.connect(lambda *_: self.update_handle())
         self.horizontalScrollBar().valueChanged.connect(lambda _: self.update_handle())
@@ -112,13 +115,14 @@ class TableGrid(QTableWidget):
         super().resizeEvent(event)
         self.update_handle()
 
-    def selected_bounds(self) -> tuple[int, int, list[int]] | None:
-        """Первая и последняя строки выделения и его столбцы; None — ничего не выделено."""
+    def selected_bounds(self) -> tuple[int, int, int, int] | None:
+        """Первая и последняя строки и первый и последний столбцы выделения; None — ничего не выделено."""
         indexes = self.selectionModel().selectedIndexes() if self.selectionModel() is not None else []
         if not indexes:
             return None
         rows = [index.row() for index in indexes]
-        return min(rows), max(rows), sorted({index.column() for index in indexes})
+        columns = [index.column() for index in indexes]
+        return min(rows), max(rows), min(columns), max(columns)
 
     def update_handle(self) -> None:
         """Показать маркер у правого нижнего угла выделения (если угол виден и ячейка не правится)."""
@@ -127,41 +131,68 @@ class TableGrid(QTableWidget):
             handle.hide()
             return
         indexes = self.selectionModel().selectedIndexes()
-        if not indexes:
-            handle.hide()
-            return
-        bottom = max(index.row() for index in indexes)
-        right = max(index.column() for index in indexes)
+        if indexes:
+            bottom = max(index.row() for index in indexes)
+            right = max(index.column() for index in indexes)
+        else:
+            current = self.currentIndex()
+            if not current.isValid():
+                handle.hide()
+                return
+            bottom, right = current.row(), current.column()
         rect = self.visualRect(self.model().index(bottom, right))
         point = QPoint(rect.right() + 1, rect.bottom() + 1)
         if not self.viewport().rect().contains(point):
             handle.hide()
             return
-        handle.move(point.x() - 3, point.y() - 3)
+        handle.move(point.x() - 4, point.y() - 4)
         handle.show()
         handle.raise_()
 
+    def _cell_at(self, point: QPoint) -> tuple[int, int]:
+        """Строка и столбец под точкой; за краем таблицы — крайние (тянуть можно до конца)."""
+        row, column = self.rowAt(point.y()), self.columnAt(point.x())
+        if point.y() < 0:
+            row = 0
+        elif row < 0:
+            row = self.rowCount() - 1
+        if point.x() < 0:
+            column = 0
+        elif column < 0:
+            column = self.columnCount() - 1
+        return max(row, 0), max(column, 0)
+
+    def _fill_target(self, point: QPoint) -> tuple[str, int] | None:
+        """Куда тянет маркер: ("down"|"up"|"right"|"left", до какой строки или столбца); None — никуда."""
+        if self._anchor is None:
+            return None
+        top, bottom, left, right = self._anchor
+        row, column = self._cell_at(point)
+        moves = [("down", row - bottom), ("up", top - row), ("right", column - right), ("left", left - column)]
+        direction, extent = max(moves, key=lambda move: move[1])
+        return (direction, row if direction in ("down", "up") else column) if extent > 0 else None
+
     def fill_start(self) -> bool:
         """Запомнить выделение для растягивания; False — нечего тянуть."""
-        self._fill = self.selected_bounds()
-        return self._fill is not None
+        self._anchor = self.selected_bounds()
+        return self._anchor is not None
 
-    def fill_preview(self, row: int) -> None:
-        """Показать рамкой строки, которые будут заполнены при отпускании на строке row."""
-        if self._fill is None or row < 0:
-            return
-        top, bottom, columns = self._fill
-        if row > bottom:
-            first, last = top, row
-        elif row < top:
-            first, last = row, bottom
-        else:
+    def fill_preview(self, point: QPoint) -> None:
+        """Показать рамкой, какие строки или столбцы будут заполнены при отпускании."""
+        target = self._fill_target(point)
+        if target is None:
             self.band.hide()
             return
-        x0 = self.columnViewportPosition(columns[0])
-        x1 = self.columnViewportPosition(columns[-1]) + self.columnWidth(columns[-1])
-        y0 = self.rowViewportPosition(first)
-        y1 = self.rowViewportPosition(last) + self.rowHeight(last)
+        top, bottom, left, right = self._anchor
+        direction, position = target
+        if direction in ("down", "up"):
+            top, bottom = (top, position) if direction == "down" else (position, bottom)
+        else:
+            left, right = (left, position) if direction == "right" else (position, right)
+        x0 = self.columnViewportPosition(left)
+        x1 = self.columnViewportPosition(right) + self.columnWidth(right)
+        y0 = self.rowViewportPosition(top)
+        y1 = self.rowViewportPosition(bottom) + self.rowHeight(bottom)
         rect = QRect(QPoint(x0, y0), QPoint(x1 - 1, y1 - 1)) & self.viewport().rect()
         if rect.isValid():
             self.band.setGeometry(rect)
@@ -169,20 +200,25 @@ class TableGrid(QTableWidget):
         else:
             self.band.hide()
 
-    def fill_finish(self, row: int) -> None:
-        """Отпустили маркер: сообщить, какие строки и столбцы заполнить значениями строки-источника."""
+    def fill_finish(self, point: QPoint) -> None:
+        """Отпустили маркер: сообщить, какие строки или столбцы заполнить значениями крайней линии."""
         self.band.hide()
-        if self._fill is None:
+        if self._anchor is None:
             return
-        top, bottom, columns = self._fill
-        self._fill = None
-        if row > bottom:
-            source, first, last = top, top, row
-        elif row < top:
-            source, first, last = bottom, row, bottom
+        target = self._fill_target(point)
+        top, bottom, left, right = self._anchor
+        self._anchor = None
+        if target is None:
+            return
+        direction, position = target
+        if direction == "down":
+            self.fill_rows_requested.emit(top, bottom + 1, position, list(range(left, right + 1)))
+        elif direction == "up":
+            self.fill_rows_requested.emit(bottom, position, top - 1, list(range(left, right + 1)))
+        elif direction == "right":
+            self.fill_cols_requested.emit(left, right + 1, position, list(range(top, bottom + 1)))
         else:
-            return
-        self.fill_requested.emit(source, first, last, columns)
+            self.fill_cols_requested.emit(right, position, left - 1, list(range(top, bottom + 1)))
 
     def keyPressEvent(self, event: Any) -> None:
         """Delete — очистить выделенные ячейки (пока ячейка правится, Delete работает в поле)."""
@@ -190,6 +226,11 @@ class TableGrid(QTableWidget):
             self.delete_requested.emit()
             return
         super().keyPressEvent(event)
+
+    def closeEditor(self, editor: QWidget, hint: Any) -> None:
+        """Закончилась правка ячейки — снова показать маркер растягивания."""
+        super().closeEditor(editor, hint)
+        self.update_handle()
 
 
 class AddColumnDialog(QDialog):
@@ -264,28 +305,33 @@ class TableEditor(QDialog):
             b.clicked.connect(lambda checked=False: slot())
             return b
 
-        self.undo_button = button("↶ Отменить (Ctrl+Z)", self.undo, "Отменить последнюю правку (шаг за шагом)")
-        self.redo_button = button("↷ Повторить (Ctrl+Y)", self.redo, "Повторить отменённую правку")
+        self.undo_button = button("↶ Отменить", self.undo, "Отменить последнюю правку (шаг за шагом)")
+        self.redo_button = button("↷ Повторить", self.redo, "Повторить отменённую правку")
         self.add_button = button("Добавить колонку…", self.add_column,
                                  "Новая колонка таблицы: имя и описание (2-я строка xlsx)")
         self.fill_button = button("Растянуть вниз (Ctrl+D)", self.fill_down,
                                   "Выделить ячейку или строки: значение верхней строки выделения — на все его "
-                                  "строки;\nодна ячейка — до конца таблицы. Ещё можно потянуть синий квадратик "
-                                  "в углу выделения.")
+                                  "строки;\nесли во всём выделении заполнена одна ячейка — оно на всё выделение; "
+                                  "одна ячейка — до конца таблицы.")
+        self.fill_right_button = button("Растянуть вправо (Ctrl+R)", self.fill_right,
+                                        "Выделить столбцы: значение левого столбца выделения — на столбцы правее;\n"
+                                        "если во всём выделении заполнена одна ячейка — оно на всё выделение.")
         self.revert_button = button("Вернуть как в файлах", self.revert,
-                                    "Забыть все несохранённые правки таблицы (в отличие от Ctrl+Z — сразу все)")
+                                    "Забыть все несохранённые правки таблицы (в отличие от отмены — сразу все)")
         self.changes_label = QLabel()
         self.status = QLabel()
         self.status.setStyleSheet("color: #707070;")
         self.status.setWordWrap(True)
         row = QHBoxLayout()
-        for b in (self.undo_button, self.redo_button, self.add_button, self.fill_button, self.revert_button):
+        for b in (self.undo_button, self.redo_button, self.add_button, self.fill_button,
+                  self.fill_right_button, self.revert_button):
             row.addWidget(b)
         row.addSpacing(12)
         row.addWidget(self.changes_label)
         row.addStretch(1)
-        hint = QLabel("Двойной щелчок — правка ячейки. Выделите ячейки и потяните синий квадратик в правом "
-                      "нижнем углу выделения (или Ctrl+D), чтобы растянуть значения; Delete — очистить.")
+        hint = QLabel("Двойной щелчок — правка ячейки. Выделите ячейки (Shift+стрелки или Shift+щелчок) и "
+                      "потяните синий квадратик в правом нижнем углу выделения (вниз, вверх, вправо или влево) — "
+                      "как в Excel; Delete — очистить.")
         hint.setStyleSheet("color: #707070;")
         hint.setWordWrap(True)
 
@@ -306,7 +352,8 @@ class TableEditor(QDialog):
         self.grid.setItemDelegate(self.delegate)
         self.grid.itemChanged.connect(self._item_changed)
         self.grid.currentCellChanged.connect(self._current_cell_changed)
-        self.grid.fill_requested.connect(self._fill_requested)
+        self.grid.fill_rows_requested.connect(self._fill_rows)
+        self.grid.fill_cols_requested.connect(self._fill_cols)
         self.grid.delete_requested.connect(self.clear_selected)
 
         layout = QVBoxLayout(self)
@@ -314,8 +361,7 @@ class TableEditor(QDialog):
         layout.addWidget(hint)
         layout.addWidget(self.grid, 1)
         layout.addWidget(self.status)
-        for key, slot in ((QKeySequence.StandardKey.Undo, self.undo), (QKeySequence.StandardKey.Redo, self.redo),
-                          (QKeySequence("Ctrl+Shift+Z"), self.redo), (QKeySequence("Ctrl+D"), self.fill_down),
+        for key, slot in ((QKeySequence("Ctrl+D"), self.fill_down), (QKeySequence("Ctrl+R"), self.fill_right),
                           (QKeySequence.StandardKey.Save, self.save)):
             QShortcut(QKeySequence(key), self).activated.connect(slot)
 
@@ -468,26 +514,69 @@ class TableEditor(QDialog):
             self.page.message.emit(f"Очищено ячеек: {changed}")
 
     def fill_down(self) -> None:
-        """Ctrl+D: значение верхней строки выделения — на все выделенные строки (одна ячейка — до конца)."""
-        if self.page.table is None:
-            return
+        """Ctrl+D: значения верхней строки выделения (если во всём выделении заполнена одна ячейка — оно)
+        на строки ниже; выделена одна ячейка или строка — до конца таблицы."""
+        table = self.page.table
         bounds = self.grid.selected_bounds()
-        if bounds is None:
+        if table is None or bounds is None:
             self.page.message.emit("Сначала выделите ячейку или строки")
             return
-        top, bottom, columns = bounds
-        if top == bottom:
-            bottom = len(self.page.table) - 1
-            if bottom <= top:
-                self.page.message.emit("Растягивать некуда: выделена последняя строка")
-                return
-        headers = [self.headers[column] for column in columns]
-        self.page.fill_down(top, list(range(top, bottom + 1)), headers)
+        top, bottom, left, right = bounds
+        last = len(table) - 1 if top == bottom else bottom
+        columns = list(range(left, right + 1))
+        sources = [(i, c) for i in range(top, bottom + 1) for c in columns
+                   if not is_empty(table.value(i, self.headers[c]))]
+        if len(sources) == 1:  # во всём выделении одно значение — оно на всё выделение
+            row, column = sources[0]
+            value = table.value(row, self.headers[column])
+            cells = [(i, self.headers[c], value) for i in range(top, last + 1) for c in columns
+                     if (i, c) != (row, column)]
+        else:  # иначе каждая колонка — значениями верхней строки выделения
+            cells = [(i, self.headers[c], table.value(top, self.headers[c]))
+                     for c in columns for i in range(top + 1, last + 1)
+                     if not is_empty(table.value(top, self.headers[c]))]
+        if cells:
+            self.page.apply_cells(cells)
+        else:
+            self.page.message.emit("Растягивать нечего: в выделении нет значений")
 
-    def _fill_requested(self, source: int, first: int, last: int, columns: object) -> None:
-        """Маркер в углу выделения отпущен: растянуть значения строки source."""
+    def fill_right(self) -> None:
+        """Ctrl+R: значения левого столбца выделения (если во всём выделении заполнена одна ячейка — оно)
+        на столбцы правее; в одном столбце растягивать некуда."""
+        table = self.page.table
+        bounds = self.grid.selected_bounds()
+        if table is None or bounds is None:
+            self.page.message.emit("Сначала выделите ячейки")
+            return
+        top, bottom, left, right = bounds
+        if left == right:
+            self.page.message.emit("Выделите столбцы правее — растягивать вправо некуда")
+            return
+        sources = [(i, c) for i in range(top, bottom + 1) for c in range(left, right + 1)
+                   if not is_empty(table.value(i, self.headers[c]))]
+        if len(sources) == 1:  # во всём выделении одно значение — оно на всё выделение
+            row, column = sources[0]
+            value = table.value(row, self.headers[column])
+            cells = [(i, self.headers[c], value) for i in range(top, bottom + 1)
+                     for c in range(left, right + 1) if (i, c) != (row, column)]
+        else:  # иначе каждая строка — значениями левого столбца выделения
+            cells = [(i, self.headers[c], table.value(i, self.headers[left]))
+                     for i in range(top, bottom + 1) for c in range(left + 1, right + 1)
+                     if not is_empty(table.value(i, self.headers[left]))]
+        if cells:
+            self.page.apply_cells(cells)
+        else:
+            self.page.message.emit("Растягивать нечего: в выделении нет значений")
+
+    def _fill_rows(self, source: int, first: int, last: int, columns: object) -> None:
+        """Маркер отпущен по вертикали: значения строки source — на строки first…last."""
         headers = [self.headers[column] for column in columns if 0 <= column < len(self.headers)]
         self.page.fill_down(source, list(range(first, last + 1)), headers)
+
+    def _fill_cols(self, source: int, first: int, last: int, rows: object) -> None:
+        """Маркер отпущен по горизонтали: значения столбца source — на столбцы first…last."""
+        headers = [self.headers[column] for column in range(first, last + 1) if 0 <= column < len(self.headers)]
+        self.page.fill_right(self.headers[source], headers, list(rows))
 
     def add_column(self) -> None:
         """«Добавить колонку…»: спросить имя и описание, добавить колонку в таблицу."""
@@ -499,19 +588,26 @@ class TableEditor(QDialog):
             self.page.message.emit(f"Колонка {name} добавлена — в таблицу по Ctrl+S")
             self.highlight_column(name)
 
-    def undo(self) -> None:
-        """Ctrl+Z: отменить правку таблицы; пока правится ячейка — отменить набор в её поле."""
+    def editing_field(self) -> QLineEdit | None:
+        """Поле правки ячейки, если она сейчас идёт (иначе None): в нём Ctrl+Z — отмена набора."""
         focus = QApplication.focusWidget()
         if self.grid.state() == QAbstractItemView.State.EditingState and isinstance(focus, QLineEdit):
-            focus.undo()
+            return focus
+        return None
+
+    def undo(self) -> None:
+        """Отменить правку таблицы (кнопка «Отменить»); пока правится ячейка — отменить набор в её поле."""
+        field = self.editing_field()
+        if field is not None:
+            field.undo()
             return
         self.page.undo()
 
     def redo(self) -> None:
-        """Ctrl+Y: повторить отменённую правку; пока правится ячейка — повторить набор в её поле."""
-        focus = QApplication.focusWidget()
-        if self.grid.state() == QAbstractItemView.State.EditingState and isinstance(focus, QLineEdit):
-            focus.redo()
+        """Повторить отменённую правку (кнопка «Повторить»); пока правится ячейка — повторить набор."""
+        field = self.editing_field()
+        if field is not None:
+            field.redo()
             return
         self.page.redo()
 

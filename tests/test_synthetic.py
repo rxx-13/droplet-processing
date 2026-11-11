@@ -346,8 +346,9 @@ def test_app_table_editor_edits_adds_columns_fills_and_undoes(run, tmp_path):
     assert [page.table.value(i, "rim") for i in (0, 1)] == [111, 321]
 
     editor.grid.clearSelection()
-    editor.grid.setCurrentCell(1, column)  # одна ячейка — растянуть до конца таблицы
-    editor.fill_down()
+    editor.grid.setCurrentCell(1, column)
+    editor.grid.setRangeSelected(QTableWidgetSelectionRange(1, column, 1, column), True)
+    editor.fill_down()  # одна ячейка — растянуть до конца таблицы
     assert [page.table.value(i, "rim") for i in range(3)] == [111, 321, 321]
     page.undo()
 
@@ -356,6 +357,17 @@ def test_app_table_editor_edits_adds_columns_fills_and_undoes(run, tmp_path):
     ustar = editor.headers.index("ustar")
     editor.grid.item(0, ustar).setText("0,25")  # запятая — тоже десятичный знак
     assert page.table.value(0, "ustar") == 0.25
+
+    editor.grid.clearSelection()  # во всём выделении одно значение — оно на всё выделение
+    editor.grid.setRangeSelected(QTableWidgetSelectionRange(0, ustar, 2, ustar), True)
+    editor.fill_down()
+    assert [page.table.value(i, "ustar") for i in range(3)] == [0.25, 0.25, 0.25]
+
+    editor.grid.clearSelection()  # растянуть вправо: левое значение — на столбцы правее
+    editor.grid.setRangeSelected(QTableWidgetSelectionRange(1, editor.headers.index("start_frame"),
+                                                            1, editor.headers.index("fin_frame")), True)
+    editor.fill_right()
+    assert page.table.value(1, "fin_frame") == 2
 
     page._field_focused("start_frame")  # поле в сайдбаре подсвечивает свой столбец
     assert editor.delegate.column == editor.headers.index("start_frame")
@@ -423,6 +435,19 @@ def test_app_settings_panel_recomputes_frame_and_saves_files(run, tmp_path):
     assert "RIM_GRAY_RANGE = (-300, -200)  # rim_gray_range\n" in text and "RIM_BINARIZE_THRESHOLD = 0.15  #" in text
     assert thresholds.RIM_GRAY_RANGE == (-300, -200)  # модуль в памяти — как файл
     assert 'FPS = "fps"' in (tmp_path / "settings.py").read_text(encoding="utf-8") and settings.FPS == "fps"
+
+    # общая отмена приложения: правки таблицы и настроек — в одном порядке, где бы ни был курсор
+    page.set_value("start_frame", 5, rows=[0])
+    panel.set_text("thresholds", "RIM_GRAY_RANGE", "(-120, 0)")
+    assert page.undo()  # последняя правка — настройка
+    assert panel.files["thresholds"].text("RIM_GRAY_RANGE") == "(-300, -200)"
+    assert page.undo()  # теперь правка таблицы
+    assert page.table.value(0, "start_frame") == 2
+    assert page.redo() and page.redo()
+    assert page.table.value(0, "start_frame") == 5
+    assert panel.files["thresholds"].text("RIM_GRAY_RANGE") == "(-120, 0)"
+    page.discard()
+    panel.discard()
 
     panel.set_text("thresholds", "RIM_GRAY_RANGE", "(-110, 0)")
     panel.discard()  # «Вернуть как в файлах»

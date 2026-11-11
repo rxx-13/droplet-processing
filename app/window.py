@@ -10,16 +10,19 @@
 поля таблицы и панель «Настройки», app/params_page.py); «Запуск» — app/jobs_page.py; «Результаты» —
 app/results_page.py. Пока идёт обработка, эксперимент не сменить; при закрытии окно предложит её остановить.
 Ctrl+S — сохранить правки таблицы и настроек; F5 — перечитать settings.py, thresholds.py и таблицу
-(несохранённые правки остаются, таблица с правками не перечитывается). При закрытии окна или смене
-эксперимента с несохранёнными правками окно спросит, сохранить ли их.
+(несохранённые правки остаются, таблица с правками не перечитывается). Ctrl+Z / Ctrl+Y — отменить /
+повторить последнюю правку (таблицы или настроек) в любом месте окна (ApplicationShortcut). При закрытии
+окна или смене эксперимента с несохранёнными правками окно спросит, сохранить ли их.
 """
 
 import importlib
 from pathlib import Path
 from types import ModuleType
 
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
-from PySide6.QtWidgets import QComboBox, QLabel, QMainWindow, QMessageBox, QTabWidget, QToolBar, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QApplication, QComboBox, QLabel, QLineEdit, QMainWindow, QMessageBox,
+                               QPlainTextEdit, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from app.analysis_page import AnalysisPage
 from app.jobs_page import JobsPage
@@ -88,6 +91,12 @@ class MainWindow(QMainWindow):
         self.records = RecordsPage(settings, thresholds, workers)
         self.records.changed.connect(self._update_title)
         self.records.message.connect(lambda text: self.statusBar().showMessage(text, STATUS_MS))
+        for key, slot in ((QKeySequence.StandardKey.Undo, self._undo),
+                          (QKeySequence.StandardKey.Redo, self._redo),
+                          (QKeySequence("Ctrl+Shift+Z"), self._redo)):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)  # в любом месте приложения
+            shortcut.activated.connect(slot)
         self.jobs = JobsPage(self.records, self.save)
         self.jobs.message.connect(lambda text: self.statusBar().showMessage(text, STATUS_MS))
         self.results = ResultsPage(self.records)
@@ -143,6 +152,35 @@ class MainWindow(QMainWindow):
         params = self.records.params.save() if self.records.params.has_changes else True
         self._update_title()
         return table and params
+
+    def _undo(self) -> None:
+        """Ctrl+Z: отменить последнюю правку таблицы или настроек в любом месте окна; пока правится
+        ячейка полной таблицы или поле «Обработки результатов» — вернуть набор в самом поле."""
+        editor = self.records.table_editor
+        field = editor.editing_field() if editor is not None and editor.isVisible() else None
+        focus = QApplication.focusWidget()
+        if field is not None:
+            field.undo()
+            return
+        if isinstance(focus, (QLineEdit, QPlainTextEdit)) and (
+                self.analysis.isAncestorOf(focus) or focus.window() is not self):
+            focus.undo()  # поле в диалоге или «Обработке результатов» — обычная отмена набора
+            return
+        self.records.undo()
+
+    def _redo(self) -> None:
+        """Ctrl+Y: повторить отменённую правку; в тех же полях — повторить набор в самом поле."""
+        editor = self.records.table_editor
+        field = editor.editing_field() if editor is not None and editor.isVisible() else None
+        focus = QApplication.focusWidget()
+        if field is not None:
+            field.redo()
+            return
+        if isinstance(focus, (QLineEdit, QPlainTextEdit)) and (
+                self.analysis.isAncestorOf(focus) or focus.window() is not self):
+            focus.redo()
+            return
+        self.records.redo()
 
     def _confirm_discard(self) -> bool:
         """Есть несохранённые правки — спросить: сохранить, не сохранять или отменить. True — можно продолжать."""

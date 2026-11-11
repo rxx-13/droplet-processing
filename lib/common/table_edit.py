@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from openpyxl import load_workbook
 
@@ -186,6 +186,7 @@ class EditableTable:
         self.new_columns: dict[str, str] = {}  # добавленные колонки, которых ещё нет в файле: заголовок -> описание
         self.undo_stack: list[_Step] = []
         self.redo_stack: list[_Step] = []
+        self.on_step: Callable[[str], None] | None = None  # новая правка (для общей отмены приложения)
         self._group: _Step | None = None  # накапливаемые правки batch()
         self._depth = 0  # вложенность batch()
 
@@ -249,6 +250,7 @@ class EditableTable:
                 if self._group is not None and (self._group.edits or self._group.columns):
                     self.undo_stack.append(self._group)
                     self.redo_stack.clear()
+                    self._step_done(self._step_text(self._group))
                 self._group = None
 
     def break_merge(self) -> None:
@@ -264,14 +266,9 @@ class EditableTable:
             return
         if merge is not None and self.undo_stack and self.undo_stack[-1].merge == merge:
             step = self.undo_stack[-1]
-            for index, old in enumerate(step.edits):
+            for old in step.edits:
                 if old.i == i and old.header == header:
-                    if _same_state(old.before, after):  # набрали обратно как было — шаг не нужен
-                        step.edits.pop(index)
-                        if not step.edits and not step.columns:
-                            self.undo_stack.pop()
-                    else:
-                        old.after = after  # та же ячейка в той же серии — обновляем конечное значение
+                    old.after = after  # та же ячейка в той же серии — обновляем конечное значение
                     break
             else:
                 step.edits.append(edit)
@@ -279,6 +276,7 @@ class EditableTable:
             return
         self.undo_stack.append(_Step(merge, [edit], []))
         self.redo_stack.clear()
+        self._step_done(header)
 
     def _record_column(self, header: str, description: str) -> None:
         """Запомнить добавление колонки для отмены."""
@@ -287,6 +285,35 @@ class EditableTable:
             return
         self.undo_stack.append(_Step(None, [], [(header, description)]))
         self.redo_stack.clear()
+        self._step_done(f"колонка {header}")
+
+    @staticmethod
+    def _step_text(step: _Step) -> str:
+        """Что отменяется, словами: колонка, одна ячейка или правки таблицы."""
+        if step.columns and not step.edits:
+            return "колонка " + ", ".join(header for header, _ in step.columns)
+        if len(step.edits) == 1 and not step.columns:
+            return step.edits[0].header
+        return "правки таблицы"
+
+    def _step_done(self, text: str) -> None:
+        """Сообщить о новой правке — приложение вносит её в общую историю отмены."""
+        if self.on_step is not None:
+            self.on_step(text)
+
+    def fill_right(self, source: str, headers: list[str], rows: list[int]) -> list[tuple[int, str, Any]]:
+        """Растянуть значения колонки source по колонкам headers на строки rows одной правкой.
+
+        Возвращает правки [(строка, колонка, значение)] — только ячейки, которые действительно меняются
+        (source и одинаковые значения пропускаются).
+        """
+        cells = [(i, header, self.value(i, source)) for i in rows for header in headers
+                 if header != source and not same_value(self.value(i, source), self.value(i, header))]
+        if cells:
+            with self.batch():
+                for i, header, value in cells:
+                    self.set(i, header, value)
+        return cells
 
     def undo(self) -> _Step | None:
         """Отменить последний шаг; None — отменять нечего."""

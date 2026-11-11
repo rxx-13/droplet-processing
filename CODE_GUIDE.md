@@ -124,13 +124,15 @@ run.py → MainWindow (window.py)                  две части: «Обра
 │                                                «Сделать текущим», вкладки ниже, Ctrl+S, F5) и «Обработка результатов»
 │     current_experiment, set_current_experiment (lib/common/config_edit.py) — experiments/current.py
 ├─ RecordsPage (records_page.py)                 вкладка «Записи»
+│   ├─ UndoManager (undo.py)                     общая отмена приложения: шаги таблицы и настроек в одном
+│   │     порядке (record, undo, redo, forget); Ctrl+Z / Ctrl+Y — MainWindow, ApplicationShortcut
 │   ├─ EditableTable (lib/common/table_edit.py)  таблица: все колонки, правки в памяти, отмена, автозаполнение
-│   │     read_table; record (как read_records); suggestion, fill_like_previous, fill_down;
-│   │     undo / redo / batch (шаги отмены); save → save_cells (только изменённые ячейки;
-│   │     копия таблицы — в <OUTPUT_DIR>/table_backups)
+│   │     read_table; record (как read_records); suggestion, fill_like_previous, fill_down, fill_right;
+│   │     undo / redo / batch (шаги отмены); on_step — новая правка → UndoManager;
+│   │     save → save_cells (только изменённые ячейки; копия таблицы — в <OUTPUT_DIR>/table_backups)
 │   ├─ TableEditor (table_editor.py)             окно полной таблицы (Ctrl+T): ячейки, новые колонки,
-│   │     растягивание значений (маркер в углу выделения, Ctrl+D), Ctrl+Z / Ctrl+Y; подсветка связи
-│   │     с полями сайдбара (column_focused, highlight_field, cells_changed, table_reloaded)
+│   │     растягивание как в Excel (маркер в углу выделения во все стороны; Ctrl+D / Ctrl+R);
+│   │     подсветка связи с полями сайдбара (column_focused, highlight_field, cells_changed, table_reloaded)
 │   ├─ Frames                                    все кадры записи (не только диапазон)
 │   ├─ FrameComputer (frame_view.py)             расчёт кадров в процессах: текущий — в своём, впрок — в остальных
 │   │     compute_frame (lib/st1/preview.py)     st1 для одного кадра — тот же, что у окна просмотра
@@ -235,6 +237,9 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | `EditableTable.common_values` | колонки, одинаковые во всех заполненных записях | `EditableTable.fill_like_previous`, `RecordsPage` | `same_value` | — |
 | `EditableTable.fill_like_previous` | «как у предыдущих»: пустые поля — общими значениями | `RecordsPage.fill_like_previous` | `EditableTable.common_values` | — |
 | `EditableTable.fill_down` | растянуть значения строки на другие строки одной правкой | `RecordsPage.fill_down`, tests | `same_value`, `batch` | — |
+| `EditableTable.fill_right` | растянуть значения колонки на другие колонки одной правкой | `RecordsPage.fill_right`, tests | `same_value`, `batch` | — |
+| `EditableTable._step_text` | что отменяется, словами: колонка, одна ячейка или правки таблицы | `EditableTable.batch` | — | — |
+| `EditableTable._step_done` | сообщить о новой правке (общая отмена приложения) | `EditableTable` | `on_step` | — |
 | `EditableTable.save` | копия таблицы, запись правок и новых колонок, перечитывание, очистка истории | `RecordsPage.save` | `save_cells`, `read_table`, `clear_history` | — |
 | `EditableTable.discard` | «вернуть как в файлах»: перечитать таблицу, очистить историю | `RecordsPage.discard` | `read_table`, `clear_history` | — |
 
@@ -472,24 +477,32 @@ run.py → MainWindow (window.py)                  две части: «Обра
   - [run.py](app/run.py): `main` — запуск окна;
   - [window.py](app/window.py): `MainWindow` — две части окна; выбор эксперимента (`experiment_names`, `experiment_name`,
     `_choose_experiment`, `_make_current` — запись в experiments/current.py), вкладки (`_tab_changed`), `save` (Ctrl+S — таблица
-    и настройки), `reload` (F5), вопрос о несохранённых правках (`_confirm_discard`, `closeEvent`);
+    и настройки), `reload` (F5), общая отмена (`_undo`, `_redo` — Ctrl+Z / Ctrl+Y, ApplicationShortcut;
+    в полях диалогов и «Обработки результатов» — обычная отмена набора), вопрос о несохранённых правках
+    (`_confirm_discard`, `closeEvent`);
   - [records_page.py](app/records_page.py): `RecordsPage` — вкладка «Записи»: список (`_fill_list`, `_update_row`),
     кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу), поля (`Field`, `_fill_form`, `set_value`,
     `fill_like_previous`; ползунок rim — `rim_to_slider`, `slider_to_rim`), пересчёт после правки rim
     (`recompute`), правки панели «Настройки» (`apply_parameters`), «Капли и PIV»: считать или из результатов
     st1 (`_source_changed`, `_computes`, `_saved_at`), размер бэга (`_bag_mode`, `_bag_click`, `_bag_text`),
-    запись таблицы (`save`), отмена по шагам (`undo`, `redo`, `_history_done`), правка нескольких ячеек
-    (`apply_cells`, `_cells_done`), растягивание (`fill_down`), новая колонка (`add_column`), окно полной
-    таблицы (`open_table_editor`), подсветка связи (`highlight_field`, `column_focused`, сигналы
-    `cells_changed` / `table_reloaded`);
+    запись таблицы (`save`), общая отмена по шагам (`undo`, `redo`; шаги таблицы — `_table_step`,
+    `_undo_table`, `_redo_table`; настроек — `_params_step`; общий порядок — `UndoManager`), правка
+    нескольких ячеек (`apply_cells`, `_cells_done`), растягивание (`fill_down`, `fill_right`), новая
+    колонка (`add_column`), окно полной таблицы (`open_table_editor`), подсветка связи (`highlight_field`,
+    `column_focused`, сигналы `cells_changed` / `table_reloaded`);
   - [table_editor.py](app/table_editor.py): `TableEditor` — окно полной таблицы (Ctrl+T): перестройка
     (`refresh`), правка ячейки (`_item_changed`), новые колонки (`add_column`, `AddColumnDialog`), растягивание
-    (Ctrl+D — `fill_down`; маркер в углу выделения — `TableGrid`, `FillHandle`), отмена и повтор (`undo`,
-    `redo`), сохранение (`save`), «вернуть как в файлах» (`revert`), подсветка столбца (`highlight_column`,
-    `ColumnHighlightDelegate`; щелчок по ячейке — `page.highlight_field`), Delete — очистить (`clear_selected`);
+    как в Excel (`TableGrid`, `FillHandle` — маркер в углу выделения, вниз/вверх/вправо/влево;
+    Ctrl+D — `fill_down`, Ctrl+R — `fill_right`, правило единственного заполненного значения), отмена и
+    повтор (`undo`, `redo`), сохранение (`save`), «вернуть как в файлах» (`revert`), подсветка столбца
+    (`highlight_column`, `ColumnHighlightDelegate`; щелчок по ячейке — `page.highlight_field`), Delete —
+    очистить (`clear_selected`);
+  - [undo.py](app/undo.py): `UndoManager` — общая история отмены приложения (`record`, `undo`, `redo`,
+    `forget`, `clear`); шаги таблицы и панели настроек идут в общем порядке, MainWindow ставит
+    Ctrl+Z / Ctrl+Y на всё приложение (`_undo`, `_redo`);
   - [params_page.py](app/params_page.py): `ParamsPanel` — панель «Настройки» (`load`, `working`, `set_text`,
-    `save`, `discard`, поиск — `_filter`); `ParamField` — поле значения с ползунками (`slider_range`,
-    `number_text`, `_numbers`);
+    `save`, `discard`, `undo`, `redo`, история — `_record`, `_apply`, `_reset_history`, поиск — `_filter`);
+    `ParamField` — поле значения с ползунками (`slider_range`, `number_text`, `_numbers`);
   - [jobs_page.py](app/jobs_page.py): `CheckPainter` — флажки в списках как выделение в проводнике (щелчок по
     строке, протягивание мышью, Shift — диапазон; и в списке экспериментов «Обработки результатов»);
     `JobsPage` — вкладка «Запуск» (`refresh`, `set_checked`, `start`, `stop`,
@@ -605,8 +618,8 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
 
 | Файл | Что проверяет |
 |---|---|
-| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py; добавление колонки в таблицу (пустая тоже записывается); отмена и повтор по шагам (ячейка, серия набора, группа ячеек, колонка), растягивание значений, «вернуть как в файлах», очистка истории после сохранения; обработка результатов: выборка, окна, гистограмма, статистика по окнам, серии; проект LabPlot и CSV; формулы: защита, порядок параметров, свои колонки, подгонка; пути в settings.py от папки проекта; настройка из колонки таблицы (`record_setting`, `Record.number`); пример эксперимента: читается и даёт заложенные зависимости (если его результаты есть на диске) |
-| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта, флажок «удалённый бэг», FPS из колонки таблицы; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области; размер бэга (четыре щелчка, колонки добавляются в таблицу); окно полной таблицы: правка ячейки, Ctrl+Z / Ctrl+Y, растягивание вниз (Ctrl+D и одна ячейка до конца), новая колонка, подсветка «поле ↔ столбец», сохранение вместе с вкладкой; «Обработка результатов»: загрузка st4, выборка, графики, экспорт; своя колонка, подгонка, лог-ось, настройки в файл и обратно; флажки: щелчок по строке, протягивание, Shift |
+| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py; добавление колонки в таблицу (пустая тоже записывается); отмена и повтор по шагам (ячейка, серия набора, группа ячеек, колонка), растягивание вниз и вправо, «вернуть как в файлах», очистка истории после сохранения; обработка результатов: выборка, окна, гистограмма, статистика по окнам, серии; проект LabPlot и CSV; формулы: защита, порядок параметров, свои колонки, подгонка; пути в settings.py от папки проекта; настройка из колонки таблицы (`record_setting`, `Record.number`); пример эксперимента: читается и даёт заложенные зависимости (если его результаты есть на диске) |
+| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта, флажок «удалённый бэг», FPS из колонки таблицы; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области; размер бэга (четыре щелчка, колонки добавляются в таблицу); окно полной таблицы: правка ячейки, Ctrl+Z / Ctrl+Y, растягивание вниз и вправо (Ctrl+D / Ctrl+R, одна заполненная ячейка — на всё выделение), новая колонка, подсветка «поле ↔ столбец», сохранение вместе с вкладкой; панель «Настройки»: общая отмена вперемешку с правками таблицы (порядок шагов), повтор; «Обработка результатов»: загрузка st4, выборка, графики, экспорт; своя колонка, подгонка, лог-ось, настройки в файл и обратно; флажки: щелчок по строке, протягивание, Shift |
 | [test_docs.py](tests/test_docs.py) | описания у всех функций (lib/, main/, tools/, app/); полнота таблиц этого файла |
 | [compare_with_matlab.py](tests/compare_with_matlab.py) | не тест, а отчёт: насколько результаты совпадают с результатами MATLAB |
 
