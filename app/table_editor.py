@@ -15,6 +15,9 @@
   ячейка, её значение идёт на всё выделение. Delete очищает выделенные ячейки;
 * отменять и повторять правки по шагам (Ctrl+Z, Ctrl+Y приложения): одна правка ячейки, несколько ячеек
   сразу или добавленная колонка — один шаг; «Вернуть как в файлах» забывает все правки сразу (с подтверждением);
+* скрывать ненужные столбцы: «Столбцы…» — галочки у всех столбцов, или правая кнопка на заголовке —
+  «Скрыть столбец» / «Показать все столбцы». Данные в скрытых столбцах не меняются, скрытие остаётся
+  до конца работы приложения;
 * видеть несохранённые правки жёлтым, как в сайдбаре; у изменённой ячейки в подсказке — значение из файла.
 
 Связь с сайдбаром ненавязчивая: щелчок в поле справа подсвечивает его столбец здесь; щелчок по ячейке
@@ -26,10 +29,10 @@ from typing import Any
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFormLayout,
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
-                               QRubberBand, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QDialogButtonBox,
+                               QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPushButton, QRubberBand, QScrollArea, QStyledItemDelegate, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from lib.common.table_edit import format_value, is_empty
 
@@ -130,13 +133,14 @@ class TableGrid(QTableWidget):
         if self.state() == QAbstractItemView.State.EditingState or self.selectionModel() is None or not self.rowCount():
             handle.hide()
             return
-        indexes = self.selectionModel().selectedIndexes()
+        indexes = [index for index in self.selectionModel().selectedIndexes()
+                   if not self.isColumnHidden(index.column())]
         if indexes:
             bottom = max(index.row() for index in indexes)
             right = max(index.column() for index in indexes)
         else:
             current = self.currentIndex()
-            if not current.isValid():
+            if not current.isValid() or self.isColumnHidden(current.column()):
                 handle.hide()
                 return
             bottom, right = current.row(), current.column()
@@ -272,6 +276,48 @@ class AddColumnDialog(QDialog):
         return self.name_edit.text().strip(), self.description_edit.text().strip()
 
 
+class ColumnsDialog(QDialog):
+    """Какие столбцы таблицы показывать: флажок у каждого имени (снятый — столбец скрыт).
+
+    headers — все столбцы таблицы по порядку; hidden — какие из них сейчас скрыты.
+    """
+
+    def __init__(self, headers: list[str], hidden: set[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Столбцы таблицы")
+        self.boxes: dict[str, QCheckBox] = {}
+        content = QWidget()
+        column = QVBoxLayout(content)
+        column.setContentsMargins(0, 0, 0, 0)
+        for header in headers:
+            box = QCheckBox(header)
+            box.setChecked(header not in hidden)
+            self.boxes[header] = box
+            column.addWidget(box)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        show_all = buttons.addButton("Показать все", QDialogButtonBox.ButtonRole.ResetRole)
+        show_all.clicked.connect(self._check_all)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Отметьте столбцы, которые показывать:"))
+        layout.addWidget(scroll, 1)
+        layout.addWidget(buttons)
+        self.resize(340, min(560, 120 + 24 * len(headers)))
+
+    def _check_all(self) -> None:
+        """Отметить все столбцы."""
+        for box in self.boxes.values():
+            box.setChecked(True)
+
+    def hidden_columns(self) -> set[str]:
+        """Столбцы со снятой галочкой — их скрыть."""
+        return {header for header, box in self.boxes.items() if not box.isChecked()}
+
+
 class TableEditor(QDialog):
     """Окно полной таблицы (см. описание модуля). page — RecordsPage: таблица, правки, отмена и
     сохранение — общие с вкладкой «Записи»."""
@@ -280,6 +326,7 @@ class TableEditor(QDialog):
         super().__init__(parent if parent is not None else page)
         self.page = page
         self.headers: list[str] = []
+        self.hidden: set[str] = set()  # скрытые столбцы (данные в них не меняются)
         self.highlighted: str | None = None
         self._shown_headers: list[str] = []
         self._updating = False  # сейчас таблицу заполняем мы сами — itemChanged не правка
@@ -309,6 +356,8 @@ class TableEditor(QDialog):
         self.redo_button = button("↷ Повторить", self.redo, "Повторить отменённую правку")
         self.add_button = button("Добавить колонку…", self.add_column,
                                  "Новая колонка таблицы: имя и описание (2-я строка xlsx)")
+        self.columns_button = button("Столбцы…", self.choose_columns,
+                                     "Скрыть или показать столбцы таблицы (данные в скрытых не меняются)")
         self.fill_button = button("Растянуть вниз (Ctrl+D)", self.fill_down,
                                   "Выделить ячейку или строки: значение верхней строки выделения — на все его "
                                   "строки;\nесли во всём выделении заполнена одна ячейка — оно на всё выделение; "
@@ -323,7 +372,7 @@ class TableEditor(QDialog):
         self.status.setStyleSheet("color: #707070;")
         self.status.setWordWrap(True)
         row = QHBoxLayout()
-        for b in (self.undo_button, self.redo_button, self.add_button, self.fill_button,
+        for b in (self.undo_button, self.redo_button, self.add_button, self.columns_button, self.fill_button,
                   self.fill_right_button, self.revert_button):
             row.addWidget(b)
         row.addSpacing(12)
@@ -348,6 +397,8 @@ class TableEditor(QDialog):
         header = self.grid.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(False)
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._header_menu)
         self.delegate = ColumnHighlightDelegate(self.grid)
         self.grid.setItemDelegate(self.delegate)
         self.grid.itemChanged.connect(self._item_changed)
@@ -398,6 +449,7 @@ class TableEditor(QDialog):
         self.grid.blockSignals(True)
         try:
             self.headers = list(table.headers) if table is not None else []
+            self.hidden &= set(self.headers)  # в другой таблице могли быть другие столбцы
             self.grid.setRowCount(0)
             self.grid.setColumnCount(0)
             self.grid.setColumnCount(len(self.headers))
@@ -428,7 +480,7 @@ class TableEditor(QDialog):
             self._updating = False
         self._update_buttons()
         self.grid.update_handle()
-        self._apply_highlight()  # столбец мог смениться или исчезнуть
+        self._apply_hidden()  # скрытые столбцы остаются скрытыми, подсветка — по месту
 
     def _set_widths(self) -> None:
         """Ширины столбцов по содержимому (в разумных пределах); ручную правку ширин не трогает."""
@@ -523,7 +575,7 @@ class TableEditor(QDialog):
             return
         top, bottom, left, right = bounds
         last = len(table) - 1 if top == bottom else bottom
-        columns = list(range(left, right + 1))
+        columns = [c for c in range(left, right + 1) if not self.grid.isColumnHidden(c)]  # скрытые не трогаем
         sources = [(i, c) for i in range(top, bottom + 1) for c in columns
                    if not is_empty(table.value(i, self.headers[c]))]
         if len(sources) == 1:  # во всём выделении одно значение — оно на всё выделение
@@ -549,20 +601,21 @@ class TableEditor(QDialog):
             self.page.message.emit("Сначала выделите ячейки")
             return
         top, bottom, left, right = bounds
-        if left == right:
+        columns = [c for c in range(left, right + 1) if not self.grid.isColumnHidden(c)]  # скрытые не трогаем
+        if len(columns) < 2:
             self.page.message.emit("Выделите столбцы правее — растягивать вправо некуда")
             return
-        sources = [(i, c) for i in range(top, bottom + 1) for c in range(left, right + 1)
+        sources = [(i, c) for i in range(top, bottom + 1) for c in columns
                    if not is_empty(table.value(i, self.headers[c]))]
         if len(sources) == 1:  # во всём выделении одно значение — оно на всё выделение
             row, column = sources[0]
             value = table.value(row, self.headers[column])
-            cells = [(i, self.headers[c], value) for i in range(top, bottom + 1)
-                     for c in range(left, right + 1) if (i, c) != (row, column)]
+            cells = [(i, self.headers[c], value) for i in range(top, bottom + 1) for c in columns
+                     if (i, c) != (row, column)]
         else:  # иначе каждая строка — значениями левого столбца выделения
-            cells = [(i, self.headers[c], table.value(i, self.headers[left]))
-                     for i in range(top, bottom + 1) for c in range(left + 1, right + 1)
-                     if not is_empty(table.value(i, self.headers[left]))]
+            cells = [(i, self.headers[c], table.value(i, self.headers[columns[0]]))
+                     for i in range(top, bottom + 1) for c in columns[1:]
+                     if not is_empty(table.value(i, self.headers[columns[0]]))]
         if cells:
             self.page.apply_cells(cells)
         else:
@@ -570,12 +623,16 @@ class TableEditor(QDialog):
 
     def _fill_rows(self, source: int, first: int, last: int, columns: object) -> None:
         """Маркер отпущен по вертикали: значения строки source — на строки first…last."""
-        headers = [self.headers[column] for column in columns if 0 <= column < len(self.headers)]
+        headers = [self.headers[column] for column in columns
+                   if 0 <= column < len(self.headers) and not self.grid.isColumnHidden(column)]
         self.page.fill_down(source, list(range(first, last + 1)), headers)
 
     def _fill_cols(self, source: int, first: int, last: int, rows: object) -> None:
         """Маркер отпущен по горизонтали: значения столбца source — на столбцы first…last."""
-        headers = [self.headers[column] for column in range(first, last + 1) if 0 <= column < len(self.headers)]
+        if not 0 <= source < len(self.headers) or self.grid.isColumnHidden(source):
+            return
+        headers = [self.headers[column] for column in range(first, last + 1)
+                   if 0 <= column < len(self.headers) and not self.grid.isColumnHidden(column)]
         self.page.fill_right(self.headers[source], headers, list(rows))
 
     def add_column(self) -> None:
@@ -587,6 +644,44 @@ class TableEditor(QDialog):
         if self.page.add_column(name, description):
             self.page.message.emit(f"Колонка {name} добавлена — в таблицу по Ctrl+S")
             self.highlight_column(name)
+
+    def choose_columns(self) -> None:
+        """«Столбцы…»: отметить, какие столбцы показывать (данные в скрытых не меняются)."""
+        dialog = ColumnsDialog(self.headers, self.hidden, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.hidden = dialog.hidden_columns()
+            self._apply_hidden()
+            self._update_buttons()
+
+    def hide_columns(self, headers: set[str]) -> None:
+        """Скрыть столбцы (правая кнопка на заголовке); данные в них не меняются."""
+        self.hidden.update(headers)
+        self._apply_hidden()
+        self._update_buttons()
+
+    def show_all_columns(self) -> None:
+        """Показать все столбцы (в том числе скрытые)."""
+        self.hidden.clear()
+        self._apply_hidden()
+        self._update_buttons()
+
+    def _header_menu(self, position: QPoint) -> None:
+        """Правая кнопка на заголовке: скрыть этот столбец или показать все."""
+        header = self.grid.horizontalHeader()
+        column = header.logicalIndexAt(position)
+        menu = QMenu(self)
+        if 0 <= column < len(self.headers):
+            name = self.headers[column]
+            menu.addAction(f"Скрыть столбец «{name}»", lambda: self.hide_columns({name}))
+        menu.addAction("Показать все столбцы", self.show_all_columns)
+        menu.exec(header.mapToGlobal(position))
+
+    def _apply_hidden(self) -> None:
+        """Скрыть или показать столбцы по self.hidden (номера столбцов при этом не меняются)."""
+        for column, header in enumerate(self.headers):
+            self.grid.setColumnHidden(column, header in self.hidden)
+        self._apply_highlight()  # подсветка могла попасть на скрытый столбец
+        self.grid.update_handle()
 
     def editing_field(self) -> QLineEdit | None:
         """Поле правки ячейки, если она сейчас идёт (иначе None): в нём Ctrl+Z — отмена набора."""
@@ -637,7 +732,7 @@ class TableEditor(QDialog):
         if self.isHidden():
             return
         self._apply_highlight()
-        if self.highlighted is not None:
+        if self.highlighted is not None and self.highlighted not in self.hidden:
             self._scroll_to_column(self.headers.index(self.highlighted))
 
     def _apply_highlight(self) -> None:
@@ -674,6 +769,10 @@ class TableEditor(QDialog):
         n = len(table.changes) + len(table.new_columns) if table is not None else 0
         self.changes_label.setText(f"Несохранённых правок: {n} (в файл — Ctrl+S)" if n else "Всё сохранено")
         self.revert_button.setEnabled(n > 0)
+        self.columns_button.setEnabled(table is not None and bool(self.headers))
+        self.columns_button.setToolTip(
+            "Скрыть или показать столбцы таблицы (данные в скрытых не меняются)"
+            + (f"\nСкрыто столбцов: {len(self.hidden)}" if self.hidden else ""))
         name = table.path.name if table is not None else ""
         self.setWindowTitle(f"Таблица — {name}" + (" *" if n else ""))
 

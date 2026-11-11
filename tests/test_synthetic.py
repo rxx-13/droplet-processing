@@ -309,6 +309,7 @@ def test_app_table_editor_edits_adds_columns_fills_and_undoes(run, tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
     from PySide6.QtWidgets import QApplication, QTableWidgetSelectionRange
 
+    from app.table_editor import ColumnsDialog
     from app.window import MainWindow
 
     application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
@@ -373,6 +374,14 @@ def test_app_table_editor_edits_adds_columns_fills_and_undoes(run, tmp_path):
     assert editor.delegate.column == editor.headers.index("start_frame")
     editor.grid.setCurrentCell(2, editor.headers.index("cx"))  # ячейка подсвечивает поле сайдбара
     assert page.highlighted_field == "cx" and page.fields["cx"].highlighted
+
+    editor.hide_columns({"cond_num"})  # скрыть столбец; перестройка окна это не сбрасывает
+    assert editor.grid.isColumnHidden(editor.headers.index("cond_num"))
+    editor.refresh()
+    assert editor.grid.isColumnHidden(editor.headers.index("cond_num"))
+    editor.show_all_columns()
+    assert not editor.grid.isColumnHidden(editor.headers.index("cond_num"))
+    assert ColumnsDialog(editor.headers, {"cond_num"}, editor).hidden_columns() == {"cond_num"}
 
     assert window.save() and not page.has_changes
     sheet = load_workbook(table).active
