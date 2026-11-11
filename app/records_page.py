@@ -13,6 +13,11 @@
 текущие rim и пороги); «взять из результатов st1» — виды 3–5 показывают сохранённое последним запуском st1
 (SavedResults из lib/st1/preview.py, мгновенно; вид 2 считается всегда — его в результатах нет).
 
+Если настройка задана именем колонки таблицы (`FPS = "fps"`, `SURFACE_ROW = "surface_row"`), а в строке
+записи числа нет, запись всё равно открывается: исходный кадр показывается, причина пишется под кадром
+(compute_error, `_speed_values`). Без `SURFACE_ROW` виды 2–5 не считаются, без `FPS` — только вид 5
+(скорость), остальные виды работают.
+
 Справа — две вкладки. «Таблица»: все колонки таблицы (набор — из заголовков, описание колонки — во
 всплывающей подсказке). У пустого поля — кнопка-подсказка «← значение» предыдущей заполненной записи
 (принять — нажать её или Enter в пустом поле); «Как у предыдущих» — заполнить пустые поля колонками,
@@ -181,6 +186,7 @@ class RecordsPage(QWidget):
         self.show_bag = False  # полупрозрачная подсветка удалённого бэга на виде «капли»
         self.matlab: tuple[list[np.ndarray], list[np.ndarray]] | None = None  # капли MATLAB по кадрам диапазона
         self.can_compute = False  # заданы кадры и rim (без них виды 2–5 не считаются)
+        self.compute_error = ""  # почему расчёт невозможен (нет числа в колонке таблицы, например surface_row)
         self.bag_points: list[tuple[float, float]] = []  # точки разметки бэга (до четырёх), px с 1
         self.source = "compute"  # капли и PIV: "compute" — считать, "file" — из результатов st1
         self.saved: SavedResults | None = None  # результаты st1 текущей записи (читаются при первом показе)
@@ -914,7 +920,8 @@ class RecordsPage(QWidget):
             self.table.break_merge()
 
     def _current_values_changed(self, header: str) -> None:
-        """Правка значения текущей записи: обновить кадры, шкалу, крестик или пересчитать с новым rim."""
+        """Правка значения текущей записи: обновить кадры, шкалу, крестик или пересчитать с новым rim
+        (или с новым значением настройки, которая берётся из колонки таблицы: surface_row, fps и т. п.)."""
         t = self.table
         if header in (t.column("rec_name"), t.column("images_path_side")):
             self.open_record(self.i, self.number)
@@ -922,12 +929,20 @@ class RecordsPage(QWidget):
             if self.rim_slider is not None and not self.rim_slider.isSliderDown():
                 self._sync_rim_slider()
             self.rim_timer.start()  # пересчёт после паузы
+        elif header in self._setting_columns():  # заполнили surface_row / fps / ... — расчёт оживает
+            self.rim_timer.start()  # пересчёт после паузы (как после правки rim)
         elif header in (t.column("start_frame"), t.column("fin_frame")):
             self._update_scale()
             self._prefetch()
         elif header in (t.column("cx"), t.column("cy")) and self.frames is not None:
             record = t.record(self.i)
             self.view.set_center(record.cx, record.cy)
+
+    def _setting_columns(self) -> set[str]:
+        """Колонки таблицы, из которых берутся числовые настройки (FPS = "fps", SURFACE_ROW = "surface_row")."""
+        values = (getattr(self.settings, name, None)
+                  for name in ("FPS", "SCALE_MM_PER_PX", "SURFACE_ROW", "BACKGROUND_FRAME"))
+        return {value for value in values if isinstance(value, str)}
 
     def _sync_rim_slider(self) -> None:
         """Ползунок rim — по значению rim выделенных записей."""
@@ -1090,17 +1105,27 @@ class RecordsPage(QWidget):
         return centers[k], radii[k]
 
     def _configure_computer(self) -> None:
-        """Передать расчёту параметры текущей записи (при смене rim или порогов посчитанное забывается)."""
+        """Передать расчёту параметры текущей записи (при смене rim или порогов посчитанное забывается).
+        Если настройка задана колонкой таблицы, а в строке записи числа нет (например, surface_row),
+        расчёт отключается, причина — в compute_error: окно не падает и показывает исходный кадр."""
         record = self.table.record(self.i) if self.table is not None and self.i >= 0 else None
+        self.compute_error = ""
         self.can_compute = self.frames is not None and record is not None and record.rim is not None
         if not self.can_compute:
             self.computer.cancel()
             return
         s, t = self.settings, self.thresholds
+        try:
+            background = int(record_setting(record, s, "BACKGROUND_FRAME"))
+            surface_row = int(record_setting(record, s, "SURFACE_ROW"))
+        except (AttributeError, ValueError, TypeError) as error:  # настройка-колонка, а в строке пусто
+            self.compute_error = f"Расчёт кадра невозможен: {error}"
+            self.can_compute = False
+            self.computer.cancel()
+            return
         values = {name: getattr(t, name) for name in dir(t) if name.isupper()}
         self.computer.configure(str(record.images_dir(Path(s.IMAGES_DIR))), self.count,
-                                int(record_setting(record, s, "BACKGROUND_FRAME")), record.rim,
-                                int(record_setting(record, s, "SURFACE_ROW")), s.ERASE_REGIONS, values)
+                                background, record.rim, surface_row, s.ERASE_REGIONS, values)
 
     def recompute(self) -> None:
         """Пересчитать кадры текущей записи с текущими rim, настройками и порогами (после их правки — сам,
@@ -1139,19 +1164,23 @@ class RecordsPage(QWidget):
                 error = result is None
             elif view in COMPUTED_VIEWS:
                 if not self.can_compute:
-                    text, error = "Для этого вида нужен rim (поле справа)", True
+                    text, error = self.compute_error or "Для этого вида нужен rim (поле справа)", True
                 elif self.number in self.computer.errors:
                     text, error = f"Ошибка расчёта: {self.computer.errors[self.number]}", True
                 else:
                     result = self.computer.result(self.number, view in PIV_VIEWS)
                     if result is None:
                         text, self.waiting = "кадр считается…", True
+            mm_per_px, fps, speed_error = self._speed_values(record, view)
+            if speed_error and result is not None and view == "piv_matlab":  # вид 5 не построить — кадр как есть
+                result, text, error = None, speed_error, True
+            if view == "frame" and (self.compute_error or speed_error):
+                text = " — ".join(part for part in (self.compute_error, speed_error) if part)
+                error = True  # причина видна сразу на виде 1, не дожидаясь видов 2–5
             caption = self.view.show(
                 view if result is not None else "frame", frame, result, matlab=self._matlab_at(self.number),
                 arrow_scale=self.thresholds.PIV_PLOT_ARROW_SCALE, speed_max=self.thresholds.PIV_PLOT_SPEED_MAX,
-                mm_per_px=record_setting(record, self.settings, "SCALE_MM_PER_PX"),
-                fps=record_setting(record, self.settings, "FPS"),
-                show_erased=self.show_bag)
+                mm_per_px=mm_per_px, fps=fps, show_erased=self.show_bag)
             if result is not None and not self._computes(view):
                 text = f"из результатов st1 ({datetime.fromtimestamp(self.saved.modified):%d.%m.%Y %H:%M}): {caption}"
             text = text or caption
@@ -1164,6 +1193,16 @@ class RecordsPage(QWidget):
         bag = self._bag_text()
         self._set_info(f"{text} — {bag}" if text and bag else text or bag, error)
         self._update_scale()
+
+    def _speed_values(self, record: Record, view: str) -> tuple[float, float, str]:
+        """Масштаб (мм/px) и кадры/с для подписи скорости — нужны только виду «PIV как в MATLAB».
+        Если настройка-колонка пуста, возвращает 1.0 и причину: вид 5 не построить, остальные можно."""
+        try:
+            mm_per_px = record_setting(record, self.settings, "SCALE_MM_PER_PX")
+            fps = record_setting(record, self.settings, "FPS")
+        except (AttributeError, ValueError, TypeError) as error:
+            return 1.0, 1.0, f"скорость не посчитать: {error}"
+        return mm_per_px, fps, ""
 
     def _set_info(self, text: str, error: bool = False) -> None:
         """Подпись под заголовком: что на кадре (+ сколько посчитано в фоне); ошибки — красным."""

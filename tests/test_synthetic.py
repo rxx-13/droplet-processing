@@ -4,7 +4,8 @@ r"""Проверка физики на искусственной съёмке: 
 папке. Затем по очереди выполняются st1, st2 и st4 (функции process_record из main/) и проверяется,
 что найдены все капли, их радиусы и скорость, а средние в области st4 в мм, м/с и мкм совпадают
 с заданными. Отдельно — что окно просмотра st1 (tools/st1_viewer.py) показывает все виды и что
-приложение (app/) открывает записи, показывает все виды, заполняет и сохраняет таблицу и настройки,
+приложение (app/) открывает записи, показывает все виды, открывает запись и без значения настройки-колонки
+(с пояснением под кадром), заполняет и сохраняет таблицу и настройки,
 запускает стадии в фоновых процессах (с тем же результатом, что скрипты main/) и показывает результаты.
 От конкретного эксперимента и от MATLAB проверка не зависит.
 
@@ -302,6 +303,52 @@ def test_app_opens_records_shows_every_view_and_saves_the_table(run, tmp_path):
     headers = [c.value for c in sheet[1]]
     assert headers[-3:] == ["bag_hight", "bag_length", "bag_frame"] and sheet.cell(2, len(headers)).value
     assert [sheet.cell(4, len(headers) - k).value for k in (2, 1, 0)] == [2, 3, 12]
+    window.close()
+
+
+def test_app_opens_record_with_missing_table_values_and_shows_the_reason(run, tmp_path):
+    """Настройка задана колонкой таблицы (surface_row, fps), а в строке записи пусто: запись всё равно
+    открывается на виде 1, причина видна в окне, расчёт видов 2–5 отключается — и не остаётся кадр
+    прошлой записи (раньше ValueError прерывал открытие до рисования)."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.window import MainWindow
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    table = tmp_path / "table.xlsx"
+    workbook = load_workbook(run.settings.TABLE_FILE)
+    sheet = workbook.active
+    sheet.cell(1, 9).value, sheet.cell(2, 9).value = "surface_row", "строка воды"
+    sheet.cell(1, 10).value, sheet.cell(2, 10).value = "fps", "кадров в секунду"
+    sheet.cell(3, 9).value, sheet.cell(3, 10).value = HEIGHT + 1, FPS  # у rec1 оба значения есть
+    sheet.append([1, "rec2", "rec2", 2, N_FRAMES + 1, 5000, CX, CY, None, FPS])  # нет surface_row
+    sheet.append([1, "rec3", "rec3", 2, N_FRAMES + 1, 5000, CX, CY, HEIGHT + 1])  # нет fps
+    workbook.save(table)
+    for name in ("rec1", "rec2", "rec3"):
+        shutil.copytree(Path(run.settings.IMAGES_DIR) / "rec1", tmp_path / "images" / name)
+    settings = SimpleNamespace(**{**vars(run.settings), "TABLE_FILE": str(table),
+                                  "IMAGES_DIR": str(tmp_path / "images"), "OUTPUT_DIR": str(tmp_path / "out"),
+                                  "SURFACE_ROW": "surface_row", "FPS": "fps"})
+    window = MainWindow(settings, THRESHOLDS, workers=0)
+    page = window.records
+    page.set_view("droplets")
+    assert "капель: Python 15" in page.info.text()  # rec1: оба значения из таблицы — расчёт идёт
+
+    page.switch_record(1)  # rec2: в колонке surface_row пусто
+    assert page.i == 1 and "rec2" in page.title.text()  # запись открылась, кадр — её, а не прежней
+    assert not page.can_compute and "surface_row" in page.compute_error
+    assert "surface_row" in page.info.text() and "#c00000" in page.info.styleSheet()
+    assert {"surface_row", "fps"} <= page._setting_columns()  # заполнение поля пересчитает кадр
+    page.set_view("frame")  # вид 1 показывается с пояснением, почему расчёт недоступен
+    assert "surface_row" in page.info.text() and page.view.image.isVisible()
+
+    page.switch_record(1)  # rec3: surface_row есть, fps пусто — считать можно
+    assert page.i == 2 and page.can_compute and not page.compute_error
+    page.set_view("droplets")
+    assert "капель: Python 15" in page.info.text()
+    page.set_view("piv_matlab")  # без fps скорость не посчитать — кадр как есть и причина
+    assert "fps" in page.info.text() and page.view.image.isVisible()
     window.close()
 
 

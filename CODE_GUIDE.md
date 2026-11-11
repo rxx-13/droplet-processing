@@ -482,9 +482,13 @@ run.py → MainWindow (window.py)                  две части: «Обра
     в полях диалогов и «Обработки результатов» — обычная отмена набора), вопрос о несохранённых правках
     (`_confirm_discard`, `closeEvent`);
   - [records_page.py](app/records_page.py): `RecordsPage` — вкладка «Записи»: список (`_fill_list`, `_update_row`),
-    кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу), поля (`Field`, `_fill_form`, `set_value`,
-    `fill_like_previous`; ползунок rim — `rim_to_slider`, `slider_to_rim`), пересчёт после правки rim
-    (`recompute`), правки панели «Настройки» (`apply_parameters`), «Капли и PIV»: считать или из результатов
+    кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу; если настройка-колонка пуста — нет числа
+    для `SURFACE_ROW`/`BACKGROUND_FRAME`, — расчёт отключается, причина в `compute_error`, вид 1 показывается;
+    `FPS`/`SCALE_MM_PER_PX` проверяет `_speed_values` — без них не строится только вид 5), поля
+    (`Field`, `_fill_form`, `set_value`, `fill_like_previous`; ползунок rim — `rim_to_slider`, `slider_to_rim`),
+    пересчёт после правки rim
+    и настроек-колонок (`recompute`, `_setting_columns`), правки панели «Настройки» (`apply_parameters`),
+    «Капли и PIV»: считать или из результатов
     st1 (`_source_changed`, `_computes`, `_saved_at`), размер бэга (`_bag_mode`, `_bag_click`, `_bag_text`),
     запись таблицы (`save`), общая отмена по шагам (`undo`, `redo`; шаги таблицы — `_table_step`,
     `_undo_table`, `_redo_table`; настроек — `_params_step`; общий порядок — `UndoManager`), правка
@@ -540,7 +544,7 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | `RECORDS` | settings | `run_stage`, `Viewer` | какие записи обрабатывать |
 | `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с; число или имя колонки таблицы (`record_setting`) |
 | `FPS` | settings | main/st4, `RecordPreview`, `RecordsPage` | перевод px/кадр → м/с; число (одно на эксперимент) или имя колонки таблицы (`FPS = "fps"`) — тогда у каждой записи своё (`record_setting`) |
-| `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода; число или имя колонки таблицы (`record_setting`) |
+| `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода; число или имя колонки таблицы (`record_setting`); если в строке записи числа нет — приложение показывает кадр и причину, расчёт видов 2–5 отключает |
 | `BACKGROUND_FRAME` | settings | main/st1, `compute_frame` | какой кадр — фон; число или имя колонки таблицы (`record_setting`) |
 | `ERASE_REGIONS` | settings | `RimRemover` (main/st1, `compute_frame`) | вручную закрашиваемые области |
 | `AREA_X` | settings | main/st4 | границы областей по x |
