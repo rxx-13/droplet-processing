@@ -404,6 +404,7 @@ class RecordsPage(QWidget):
             self.form.removeRow(0)
         self.fields, self.field_labels, self.rim_slider = {}, {}, None
         if self.table is None:
+            self.highlighted_field = None
             return
         rim_header = self.table.column("rim")
         for header in self.table.headers:

@@ -382,8 +382,7 @@ class TableEditor(QDialog):
             self._updating = False
         self._update_buttons()
         self.grid.update_handle()
-        if self.highlighted in self.headers:
-            self._apply_highlight()
+        self._apply_highlight()  # столбец мог смениться или исчезнуть
 
     def _set_widths(self) -> None:
         """Ширины столбцов по содержимому (в разумных пределах); ручную правку ширин не трогает."""
@@ -438,7 +437,8 @@ class TableEditor(QDialog):
         """Пользователь закончил правку ячейки: разобрать текст и записать в таблицу (ошибка — вернуть)."""
         table = self.page.table
         row, column = item.row(), item.column()
-        if self._updating or table is None or not 0 <= column < len(self.headers):
+        if (self._updating or table is None or not 0 <= column < len(self.headers)
+                or not 0 <= row < len(table)):
             return
         header = self.headers[column]
         try:
@@ -582,6 +582,8 @@ class TableEditor(QDialog):
         self.setWindowTitle(f"Таблица — {name}" + (" *" if n else ""))
 
     def closeEvent(self, event: Any) -> None:
-        """Закрытие окна: снять подсветку поля в сайдбаре."""
+        """Закрытие окна: снять подсветку поля в сайдбаре и столбца в таблице."""
+        self.highlighted = None
+        self.delegate.column = -1
         self.page.highlight_field(None)
         super().closeEvent(event)

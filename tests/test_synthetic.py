@@ -334,7 +334,7 @@ def test_app_table_editor_edits_adds_columns_fills_and_undoes(run, tmp_path):
     assert page.table.value(1, "rim") == 321 and page.table.changed(1, "rim")
     assert editor.undo_button.isEnabled()
     page.undo()
-    assert page.table.value(1, "rim") is None
+    assert page.table.value(1, "rim") == 5000  # вернулось значение из файла
     page.redo()
     assert page.table.value(1, "rim") == 321
 
