@@ -305,6 +305,72 @@ def test_app_opens_records_shows_every_view_and_saves_the_table(run, tmp_path):
     window.close()
 
 
+def test_app_table_editor_edits_adds_columns_fills_and_undoes(run, tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication, QTableWidgetSelectionRange
+
+    from app.window import MainWindow
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    table = tmp_path / "table.xlsx"
+    workbook = load_workbook(run.settings.TABLE_FILE)
+    for name in ("rec2", "rec3"):  # ещё две записи, чтобы было что растягивать
+        workbook.active.append([1, name, name, 2, N_FRAMES + 1, 5000, CX, CY])
+    workbook.save(table)
+    for name in ("rec1", "rec2", "rec3"):
+        shutil.copytree(Path(run.settings.IMAGES_DIR) / "rec1", tmp_path / "images" / name)
+    settings = SimpleNamespace(**{**vars(run.settings), "TABLE_FILE": str(table),
+                                  "IMAGES_DIR": str(tmp_path / "images"), "OUTPUT_DIR": str(tmp_path / "out")})
+    window = MainWindow(settings, THRESHOLDS, workers=0)
+    window.show()  # окно и диалог — видимые (без экрана)
+    page = window.records
+    page.open_table_editor()
+    editor = page.table_editor
+    assert editor.isVisible() and editor.grid.rowCount() == 3 and "rim" in editor.headers
+    assert not editor.undo_button.isEnabled()
+
+    column = editor.headers.index("rim")
+    editor.grid.item(1, column).setText("321")  # как будто ввели в ячейку
+    assert page.table.value(1, "rim") == 321 and page.table.changed(1, "rim")
+    assert editor.undo_button.isEnabled()
+    page.undo()
+    assert page.table.value(1, "rim") is None
+    page.redo()
+    assert page.table.value(1, "rim") == 321
+
+    editor.grid.item(0, column).setText("111")
+    editor.grid.setRangeSelected(QTableWidgetSelectionRange(0, column, 1, column), True)
+    editor.fill_down()  # Ctrl+D: значение верхней строки — на все строки выделения
+    assert [page.table.value(i, "rim") for i in (0, 1)] == [111, 111]
+    page.undo()
+    assert [page.table.value(i, "rim") for i in (0, 1)] == [111, 321]
+
+    editor.grid.clearSelection()
+    editor.grid.setCurrentCell(1, column)  # одна ячейка — растянуть до конца таблицы
+    editor.fill_down()
+    assert [page.table.value(i, "rim") for i in range(3)] == [111, 321, 321]
+    page.undo()
+
+    assert page.add_column("ustar", "скорость, м/с")  # новая колонка видна и здесь, и в сайдбаре
+    assert "ustar" in editor.headers and "ustar" in page.fields
+    ustar = editor.headers.index("ustar")
+    editor.grid.item(0, ustar).setText("0,25")  # запятая — тоже десятичный знак
+    assert page.table.value(0, "ustar") == 0.25
+
+    page._field_focused("start_frame")  # поле в сайдбаре подсвечивает свой столбец
+    assert editor.delegate.column == editor.headers.index("start_frame")
+    editor.grid.setCurrentCell(2, editor.headers.index("cx"))  # ячейка подсвечивает поле сайдбара
+    assert page.highlighted_field == "cx" and page.fields["cx"].highlighted
+
+    assert window.save() and not page.has_changes
+    sheet = load_workbook(table).active
+    headers = [c.value for c in sheet[1]]
+    assert headers.index("ustar") == len(headers) - 1 and sheet.cell(3, len(headers)).value == 0.25
+    assert sheet.cell(3, headers.index("rim") + 1).value == 111
+    assert not page.table.dirty  # после сохранения отменять и нечего, и нечего записывать
+    window.close()
+
+
 def _module_file(path: Path, values: dict) -> ModuleType:
     """Файл настроек (ИМЯ = значение  # комментарий) и модуль из него — как settings.py, thresholds.py."""
     path.write_text("".join(f"{name} = {value!r}  # {name.lower()}\n" for name, value in values.items()),

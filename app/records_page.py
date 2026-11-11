@@ -18,14 +18,22 @@
 (принять — нажать её или Enter в пустом поле); «Как у предыдущих» — заполнить пустые поля колонками,
 одинаковыми во всех заполненных записях. rim — поле и ползунок: кадр сразу пересчитывается с новым rim
 (виды 2–5). «Настройки»: значения settings.py и thresholds.py эксперимента (app/params_page.py) — правка
-тоже сразу пересчитывает кадр.
+тоже сразу пересчитывает кадр. «Полная таблица…» (Ctrl+T) — отдельное окно со всей таблицей
+(app/table_editor.py): правка любых ячеек, новые колонки, растягивание значений, отмена по шагам.
 
 Правки хранятся в памяти (lib/common/table_edit.py) и пишутся в xlsx только по «Сохранить в таблицу»
 (Ctrl+S): только изменённые ячейки; перед первой записью за сеанс — копия таблицы в
-<OUTPUT_DIR>/table_backups.
+<OUTPUT_DIR>/table_backups. Ctrl+Z отменяет последнюю правку по шагам (Ctrl+Y — повторить): набор в поле,
+движение ползунка rim и правка нескольких записей — каждый одним шагом; после сохранения отменять нечего.
+
+Связь с окном полной таблицы: щелчок в поле справа сообщает сигналом column_focused его колонку (окно
+подсвечивает столбец); щелчок по ячейке в окне вызывает highlight_field — подсвечивает поле в сайдбаре
+и прокручивает к нему. Правки в обоих местах — одни и те же: cells_changed (изменённые ячейки) и
+table_reloaded (таблица перечитана или добавлена колонка).
 
 Клавиши: ← → кадр (держать — быстро), Пробел — слайдшоу, Home End — первый / последний файл,
-PgUp PgDn — запись, 1–5 — вид, M — капли MATLAB, Esc — отменить «центр затравки».
+PgUp PgDn — запись, 1–5 — вид, M — капли MATLAB, B — удалённый бэг, Esc — отменить «центр затравки»,
+Ctrl+T — полная таблица, Ctrl+Z / Ctrl+Y — отменить / повторить правку.
 """
 
 import logging
@@ -37,7 +45,7 @@ from types import ModuleType
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFormLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSlider,
@@ -46,6 +54,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
 
 from app.frame_view import PIV_VIEWS, FrameComputer, FrameScale, FrameView
 from app.params_page import CHANGED_STYLE, INVALID_STYLE, ParamsPanel
+from app.table_editor import TableEditor
 from lib.common import files
 from lib.common.records import COLUMN_NAMES, Record, project_path, record_setting
 from lib.common.table_edit import EditableTable, TableSaveError, format_value, same_value
@@ -72,6 +81,7 @@ BACKUP_FOLDER = "table_backups"  # копии таблицы перед сохр
 RESULT_FILES = {"st1": ("st1_dir", "particles.mat"), "st2": ("st2_dir", "ptv_unfiltered.mat"),
                 "st4": ("st4_dir", "_all_stat.dat")}
 RIM_SLIDER_STEPS = 1000  # ползунок rim: логарифмическая шкала от 10 до 100 000 px²
+HIGHLIGHT_STYLE = "QLineEdit { background: #e4efff; }"  # поле, чей столбец выбран в полной таблице
 HELP = ("← →  кадр (держать — быстро)    Пробел  слайдшоу    Home End  первый / последний файл    "
         "PgUp PgDn  запись    1–5  вид    M  капли MATLAB    B  удалённый бэг    "
         "колесо мыши — увеличение, перетаскивание — сдвиг")
@@ -89,13 +99,19 @@ def slider_to_rim(position: int) -> int:
 
 class Field(QWidget):
     """Поле одной колонки таблицы: строка ввода и кнопка-подсказка «← значение» (принять одним нажатием).
-    header — заголовок колонки; description — её описание из 2-й строки таблицы."""
+    header — заголовок колонки; description — её описание из 2-й строки таблицы. focused — нажали в поле
+    (для подсветки его столбца в окне полной таблицы)."""
+
+    focused = Signal(str)  # заголовок колонки
 
     def __init__(self, header: str, description: str) -> None:
         super().__init__()
         self.header, self.description = header, description or header
+        self.highlighted = False  # подсвечено: выбран его столбец в полной таблице
+        self._changed, self._error = False, ""
         self.edit = QLineEdit()
         self.edit.setToolTip(self.description)
+        self.edit.installEventFilter(self)
         self.hint = QToolButton()
         self.hint.setVisible(False)
         self.hint.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -103,6 +119,12 @@ class Field(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.edit, 1)
         layout.addWidget(self.hint)
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:
+        """Нажали в поле (фокус на строке ввода) — сообщить его колонку."""
+        if obj is self.edit and event.type() == QEvent.Type.FocusIn:
+            self.focused.emit(self.header)
+        return super().eventFilter(obj, event)
 
     def show_value(self, text: str | None, placeholder: str, changed: bool, hint: str | None, hint_tip: str) -> None:
         """Показать значение (None — не трогать набираемый текст), отметку правки и подсказку."""
@@ -115,9 +137,18 @@ class Field(QWidget):
             self.hint.setText("← " + (hint if len(hint) <= 18 else hint[:17] + "…"))
             self.hint.setToolTip(hint_tip)
 
+    def set_highlight(self, on: bool) -> None:
+        """Подсветить поле (выбран его столбец в полной таблице); отметки правки и ошибки важнее."""
+        self.highlighted = on
+        self.mark(self._changed, self._error)
+
     def mark(self, changed: bool, error: str = "") -> None:
-        """Подсветка поля: жёлтым — несохранённая правка, красным — ошибка ввода (текст — в подсказке)."""
-        self.edit.setStyleSheet(INVALID_STYLE if error else CHANGED_STYLE if changed else "")
+        """Подсветка поля: жёлтым — несохранённая правка, красным — ошибка ввода (текст — в подсказке),
+        голубым — выбран его столбец в полной таблице."""
+        self._changed, self._error = changed, error
+        style = (INVALID_STYLE if error else CHANGED_STYLE if changed
+                 else HIGHLIGHT_STYLE if self.highlighted else "")
+        self.edit.setStyleSheet(style)
         self.edit.setToolTip(f"{error}\n\n{self.description}" if error else self.description)
 
 
@@ -127,11 +158,16 @@ class RecordsPage(QWidget):
 
     changed = Signal()  # изменились несохранённые правки (окно обновит заголовок)
     message = Signal(str)  # сообщение для строки состояния
+    cells_changed = Signal(object)  # [(строка, колонка)] — изменённые ячейки (окно полной таблицы)
+    table_reloaded = Signal()  # таблица перечитана или в ней появилась/исчезла колонка
+    column_focused = Signal(str)  # нажали в поле колонки (окно полной таблицы подсветит её столбец)
 
     def __init__(self, settings: ModuleType, thresholds: ModuleType, workers: int | None = None) -> None:
         super().__init__()
         self.settings, self.thresholds = settings, thresholds
         self.table: EditableTable | None = None
+        self.table_editor: TableEditor | None = None  # окно полной таблицы (открывается по Ctrl+T)
+        self.highlighted_field: str | None = None  # поле, подсвеченное щелчком по ячейке полной таблицы
         self.i = -1  # текущая запись (строка таблицы, с 0); её кадры показываются
         self.selected: list[int] = []  # выделенные записи: правка поля — для всех них
         self.frames: files.Frames | None = None
@@ -156,6 +192,8 @@ class RecordsPage(QWidget):
         self.results_present: dict[int, dict[str, bool]] = {}
         self.frame_cache: dict[int, np.ndarray] = {}
         self.fields: dict[str, Field] = {}
+        self.field_labels: dict[str, QLabel] = {}  # подписи полей (подсвечиваются жирным вместе с полем)
+        self.form_scroll: QScrollArea | None = None
         self.rim_slider: QSlider | None = None
         self.computer = FrameComputer(workers)
         self._build()
@@ -298,11 +336,17 @@ class RecordsPage(QWidget):
         self.form_note = QLabel()
         self.form_note.setWordWrap(True)
         self.form = QFormLayout()
+        self.full_table_button = button("Полная таблица…", self.open_table_editor,
+                                        "Окно всей таблицы: правка ячеек, новые колонки, растягивание значений, "
+                                        "отмена по шагам (Ctrl+T)")
         self.like_button = button("Как у предыдущих", self.fill_like_previous)
-        self.save_button = button("Сохранить в таблицу (Ctrl+S)", self.save)
+        self.save_button = button("Сохранить в таблицу (Ctrl+S)", self.save,
+                                  "Записать в xlsx изменённые ячейки; отменить правку — Ctrl+Z")
         self.changes_label = QLabel()
         panel = QWidget()
         side = QVBoxLayout(panel)
+        side.addWidget(self.full_table_button)
+        side.addSpacing(6)
         side.addWidget(self.form_title)
         side.addWidget(self.form_note)
         side.addLayout(self.form)
@@ -312,6 +356,7 @@ class RecordsPage(QWidget):
         side.addWidget(self.changes_label)
         side.addStretch(1)
         scroll = QScrollArea()
+        self.form_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setWidget(panel)
         self.params = ParamsPanel()
@@ -347,12 +392,17 @@ class RecordsPage(QWidget):
         keys.update({key: (lambda v=view: self.set_view(v)) for key, view in VIEW_KEYS.items()})
         for key, slot in keys.items():
             QShortcut(QKeySequence(key), self).activated.connect(slot)
+        for key, slot in ((QKeySequence.StandardKey.Undo, self.undo), (QKeySequence.StandardKey.Redo, self.redo),
+                          ("Ctrl+Shift+Z", self.redo), ("Ctrl+T", self.open_table_editor)):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)  # не в других вкладках окна
+            shortcut.activated.connect(slot)
 
     def _build_form(self) -> None:
         """Поля всех колонок таблицы (после смены таблицы); под rim — ползунок."""
         while self.form.rowCount():
             self.form.removeRow(0)
-        self.fields, self.rim_slider = {}, None
+        self.fields, self.field_labels, self.rim_slider = {}, {}, None
         if self.table is None:
             return
         rim_header = self.table.column("rim")
@@ -361,10 +411,13 @@ class RecordsPage(QWidget):
             field.edit.textEdited.connect(lambda text, h=header: self._field_edited(h, text))
             field.edit.returnPressed.connect(lambda h=header: self._accept_suggestion(h))
             field.hint.clicked.connect(lambda checked=False, h=header: self._accept_suggestion(h))
+            field.focused.connect(self._field_focused)
             label = QLabel(header)
             label.setToolTip(field.description)
+            label.setBuddy(field.edit)  # щелчок по подписи — ввод в поле (и подсветка столбца)
             self.form.addRow(label, field)
             self.fields[header] = field
+            self.field_labels[header] = label
             if header == rim_header:
                 self.rim_slider = QSlider(Qt.Orientation.Horizontal)
                 self.rim_slider.setRange(0, RIM_SLIDER_STEPS)
@@ -372,7 +425,12 @@ class RecordsPage(QWidget):
                 self.rim_slider.setToolTip("rim — порог площади, px²: объекты крупнее закрашиваются как рим.\n"
                                            "Вправо — порог больше, закрашивается меньше. Шкала 10…100 000.")
                 self.rim_slider.valueChanged.connect(self._rim_slider_moved)
+                self.rim_slider.sliderReleased.connect(self._break_merge)
                 self.form.addRow("", self.rim_slider)
+        if self.highlighted_field not in self.fields:
+            self.highlighted_field = None
+        if self.highlighted_field is not None:
+            self.highlight_field(self.highlighted_field)
 
     # ------------------------------------------------------------------ эксперимент и таблица
 
@@ -407,7 +465,7 @@ class RecordsPage(QWidget):
         path = project_path(settings.TABLE_FILE)
         same_table = self.table is not None and self.table.path == path
         old_i, old_number = self.i, self.number
-        if not (same_table and self.table.changes):
+        if not (same_table and self.table.dirty):
             try:
                 self.table = EditableTable(path)
             except Exception as error:
@@ -421,9 +479,11 @@ class RecordsPage(QWidget):
             self.frames_error = "в таблице нет записей" if self.table is not None else "таблица не прочитана"
             self.draw()
             self._fill_form()
+            self.table_reloaded.emit()
             return
         i = min(max(old_i, 0), len(self.table) - 1) if same_table else 0
         self._select(i, old_number if same_table and i == old_i else None)
+        self.table_reloaded.emit()
 
     def _select(self, i: int, number: int | None = None) -> None:
         """Выделить одну запись i и открыть её (на кадре number, по умолчанию — начало диапазона)."""
@@ -487,18 +547,36 @@ class RecordsPage(QWidget):
 
     @property
     def has_changes(self) -> bool:
-        """Есть ли несохранённые правки таблицы."""
-        return self.table is not None and bool(self.table.changes)
+        """Есть ли несохранённые правки таблицы (ячейки или добавленные колонки)."""
+        return self.table is not None and self.table.dirty
 
     def discard(self) -> None:
-        """Забыть несохранённые правки (таблица перечитается при следующем load)."""
-        if self.table is not None:
+        """Забыть все несохранённые правки: перечитать таблицу из файла (история отмены очищается)."""
+        if self.table is None:
+            return
+        try:
+            self.table.discard()
+        except Exception:  # файл тем временем пропал или испорчен — правки всё равно забыть
+            log.exception("Не удалось перечитать таблицу")
             self.table.changes.clear()
+            self.table.new_columns.clear()
+            self.table.clear_history()
+        self._build_form()
+        self._fill_list()
+        if len(self.table):
+            i = min(max(self.i, 0), len(self.table) - 1)
+            self._select(i, self.number)
+        else:
+            self.i, self.selected, self.frames = -1, [], None
+            self.draw()
+            self._fill_form()
+        self._update_counts()
         self.changed.emit()
+        self.table_reloaded.emit()
 
     def save(self) -> bool:
-        """Записать правки в таблицу (только изменённые ячейки); перед первой записью за сеанс — копия
-        таблицы в <OUTPUT_DIR>/table_backups. True — записано или нечего записывать."""
+        """Записать правки в таблицу (только изменённые ячейки и добавленные колонки); перед первой записью
+        за сеанс — копия таблицы в <OUTPUT_DIR>/table_backups. True — записано или нечего записывать."""
         if not self.has_changes:
             self.message.emit("Нет несохранённых правок")
             return True
@@ -522,7 +600,9 @@ class RecordsPage(QWidget):
             self._select(rows - 1)
         else:
             self._selection_changed()
+        self._update_counts()
         self.changed.emit()
+        self.table_reloaded.emit()
         self.message.emit(f"Сохранено в {path.name}" + (f"; копия прежней таблицы — {backup}" if backup else ""))
         return True
 
@@ -589,18 +669,20 @@ class RecordsPage(QWidget):
 
     def _update_counts(self) -> None:
         """Подпись «несохранённых правок» и доступность кнопки «Сохранить»."""
-        n = len(self.table.changes) if self.table is not None else 0
-        self.changes_label.setText(f"Несохранённых правок: {n}" if n else "Все правки сохранены")
+        n = len(self.table.changes) + len(self.table.new_columns) if self.table is not None else 0
+        self.changes_label.setText(f"Несохранённых правок: {n} (Ctrl+Z — отменить последнюю)" if n
+                                   else "Все правки сохранены")
         self.save_button.setEnabled(n > 0)
 
     def _field_edited(self, header: str, text: str) -> None:
-        """Пользователь набрал текст в поле: правка для всех выделенных записей (ошибка — красным)."""
+        """Пользователь набрал текст в поле: правка для всех выделенных записей (ошибка — красным).
+        Весь набор в поле — один шаг отмены (merge)."""
         try:
             value = self.table.parse(header, text)
         except ValueError as error:
             self.fields[header].mark(False, str(error))
             return
-        self.set_value(header, value, keep_text=True)
+        self.set_value(header, value, keep_text=True, merge=f"поле:{header}")
 
     def _accept_suggestion(self, header: str) -> None:
         """Принять подсказку «← значение» для пустого поля (одна выделенная запись)."""
@@ -609,31 +691,187 @@ class RecordsPage(QWidget):
             if suggestion is not None:
                 self.set_value(header, suggestion[1])
 
-    def set_value(self, header: str, value: Any, rows: list[int] | None = None, keep_text: bool = False) -> None:
-        """Правка колонки header у записей rows (по умолчанию — у выделенных); кадр и список обновляются."""
+    def set_value(self, header: str, value: Any, rows: list[int] | None = None, keep_text: bool = False,
+                  merge: str | None = None) -> None:
+        """Правка колонки header у записей rows (по умолчанию — у выделенных); кадр и список обновляются.
+
+        Несколько записей сразу — один шаг отмены; merge — серия правок одного поля подряд (набор текста,
+        ползунок), она тоже становится одним шагом.
+        """
+        if self.table is None or header is None:
+            return
         rows = self.selected if rows is None else rows
+        if not rows:
+            return
+        if merge is None and len(rows) > 1:
+            with self.table.batch():
+                for i in rows:
+                    self.table.set(i, header, value)
+        else:
+            for i in rows:
+                self.table.set(i, header, value, merge=merge)
+        self._cells_done([(i, header, value) for i in rows], keep_text)
+
+    def apply_cells(self, cells: list[tuple[int, str, Any]]) -> int:
+        """Записать несколько ячеек [(строка, колонка, значение)] одной правкой (один шаг Ctrl+Z);
+        возвращает число действительно изменённых ячеек."""
+        if self.table is None:
+            return 0
+        changes = [(i, header, value) for i, header, value in cells
+                   if not same_value(value, self.table.value(i, header))]
+        if not changes:
+            self.message.emit("Значения уже такие — менять нечего")
+            return 0
+        with self.table.batch():
+            for i, header, value in changes:
+                self.table.set(i, header, value)
+        self._cells_done(changes)
+        return len(changes)
+
+    def fill_down(self, source: int, rows: list[int], headers: list[str]) -> int:
+        """Растянуть значения строки source по колонкам headers на строки rows (один шаг отмены);
+        возвращает число изменённых ячеек."""
+        if self.table is None:
+            return 0
+        cells = self.table.fill_down(source, rows, headers)
+        if not cells:
+            self.message.emit("Растягивать нечего: значения уже такие")
+            return 0
+        self._cells_done(cells)
+        self.message.emit(f"Растянуто: {len(cells)} ячеек")
+        return len(cells)
+
+    def _cells_done(self, cells: list[tuple[int, str, Any]], keep_text: bool = False) -> None:
+        """После правок ячеек: список записей, поля, подписи, сигналы и пересчёт кадра текущей записи."""
+        rows = sorted({i for i, _, _ in cells})
         for i in rows:
-            self.table.set(i, header, value)
             self._update_row(i)
-        if header in self.fields and rows == self.selected:
-            self._show_field(header, keep_text)
+        for header in {header for _, header, _ in cells}:
+            if header in self.fields and any(i in self.selected for i in rows):
+                self._show_field(header, keep_text)
         self._update_counts()
         self.changed.emit()
+        self.cells_changed.emit([(i, header) for i, header, _ in cells])
         if self.i in rows:
-            self._current_values_changed(header)
+            for header in {header for i, header, _ in cells if i == self.i}:
+                self._current_values_changed(header)
 
     def fill_like_previous(self) -> None:
-        """«Как у предыдущих»: пустые поля выделенных записей — значениями, одинаковыми во всех заполненных."""
+        """«Как у предыдущих»: пустые поля выделенных записей — значениями, одинаковыми во всех заполненных
+        (все заполнения — один шаг отмены)."""
+        if self.table is None:
+            return
         filled: set[str] = set()
-        for i in self.selected:
-            filled.update(self.table.fill_like_previous(i))
-            self._update_row(i)
+        with self.table.batch():
+            for i in self.selected:
+                filled.update(self.table.fill_like_previous(i))
+                self._update_row(i)
         self._fill_form()
+        self._update_counts()
         self.changed.emit()
+        self.cells_changed.emit([(i, header) for i in self.selected for header in filled])
         if self.i in self.selected:
             for header in filled:
                 self._current_values_changed(header)
         self.message.emit(f"Заполнено: {', '.join(sorted(filled))}" if filled else "Заполнять нечего")
+
+    # ------------------------------------------------------------------ отмена правок
+
+    def undo(self) -> bool:
+        """Отменить последнюю правку таблицы (Ctrl+Z); True — что-то отменено."""
+        step = self.table.undo() if self.table is not None else None
+        return self._history_done(step, "Отменено", "Отменять нечего")
+
+    def redo(self) -> bool:
+        """Повторить отменённую правку (Ctrl+Y); True — что-то повторено."""
+        step = self.table.redo() if self.table is not None else None
+        return self._history_done(step, "Повторено", "Повторять нечего")
+
+    def _history_done(self, step: Any, what: str, nothing: str) -> bool:
+        """После отмены или повтора: список, поля, полная таблица и кадр текущей записи."""
+        if self.table is None or step is None:
+            self.message.emit(nothing)
+            return False
+        columns = [header for header, _ in step.columns]
+        rows = sorted({edit.i for edit in step.edits})
+        if columns:
+            self._build_form()
+        for i in rows:
+            if i < len(self.table):
+                self._update_row(i)
+        if columns:
+            self._fill_form()
+        else:
+            for header in {edit.header for edit in step.edits}:
+                if header in self.fields and any(edit.i in self.selected for edit in step.edits):
+                    self._show_field(header)
+        self._update_counts()
+        self.changed.emit()
+        self.cells_changed.emit([(edit.i, edit.header) for edit in step.edits])
+        if columns:
+            self.table_reloaded.emit()
+        if self.i >= 0:
+            for header in {edit.header for edit in step.edits if edit.i == self.i}:
+                self._current_values_changed(header)
+        if columns:
+            self.message.emit(f"{what}: добавление колонки {', '.join(columns)}")
+        else:
+            headers = sorted({edit.header for edit in step.edits})
+            names = ", ".join(headers[:3]) + ("…" if len(headers) > 3 else "")
+            self.message.emit(f"{what}: {names} ({len(step.edits)} яч.)" if headers else what)
+        return True
+
+    def add_column(self, header: str, description: str = "") -> bool:
+        """Добавить колонку в таблицу (в файл — по Ctrl+S); False — такая уже есть."""
+        header = header.strip()
+        if self.table is None or not header or header in self.table.headers:
+            return False
+        self.table.add_column(header, description)
+        self._build_form()
+        self._fill_form()
+        self._update_counts()
+        self.changed.emit()
+        self.table_reloaded.emit()
+        return True
+
+    # ------------------------------------------------------------------ связь с полной таблицей
+
+    def open_table_editor(self) -> None:
+        """Открыть (или поднять) окно полной таблицы — все записи и колонки (Ctrl+T)."""
+        if self.table is None:
+            self.message.emit("Таблица не прочитана — окно не открыть")
+            return
+        if self.table_editor is None:
+            self.table_editor = TableEditor(self)
+        self.table_editor.refresh()  # скрытое окно запомнит, что надо перестроить
+        self.table_editor.show()
+        self.table_editor.raise_()
+        self.table_editor.activateWindow()
+
+    def highlight_field(self, header: str | None) -> None:
+        """Подсветить поле колонки header в сайдбаре и прокрутить к нему (щелчок по ячейке полной
+        таблицы); None — снять подсветку."""
+        self.highlighted_field = header if header in self.fields else None
+        for h, field in self.fields.items():
+            field.set_highlight(h == self.highlighted_field)
+            label = self.field_labels.get(h)
+            if label is not None:
+                font = label.font()
+                font.setBold(h == self.highlighted_field)
+                label.setFont(font)
+        if self.highlighted_field is not None and self.form_scroll is not None:
+            self.form_scroll.ensureWidgetVisible(self.fields[self.highlighted_field], 0, 0)
+
+    def _field_focused(self, header: str) -> None:
+        """Нажали в поле сайдбара: закончить серию набора (новый шаг Ctrl+Z) и подсветить столбец
+        в окне полной таблицы."""
+        self._break_merge()
+        self.column_focused.emit(header)
+
+    def _break_merge(self) -> None:
+        """Закончить серию правок одного поля (набранное значение, отпущенный ползунок)."""
+        if self.table is not None:
+            self.table.break_merge()
 
     def _current_values_changed(self, header: str) -> None:
         """Правка значения текущей записи: обновить кадры, шкалу, крестик или пересчитать с новым rim."""
@@ -663,8 +901,9 @@ class RecordsPage(QWidget):
             self.rim_slider.blockSignals(False)
 
     def _rim_slider_moved(self, position: int) -> None:
-        """Ползунок rim сдвинут: rim выделенных записей (две значащие цифры)."""
-        self.set_value(self.table.column("rim"), slider_to_rim(position))
+        """Ползунок rim сдвинут: rim выделенных записей (две значащие цифры); весь сдвиг — один шаг отмены."""
+        if self.table is not None:
+            self.set_value(self.table.column("rim"), slider_to_rim(position), merge="rim")
 
     def _set_frame_column(self, key: str) -> None:
         """«Начало / конец = этот кадр»: start_frame или fin_frame текущей записи = номер текущего файла."""
@@ -720,13 +959,11 @@ class RecordsPage(QWidget):
         values = {"bag_height": round(abs(points[1][1] - points[0][1]) * scale, 2),
                   "bag_length": round(abs(points[3][0] - points[2][0]) * scale, 2), "bag_frame": self.number}
         missing = [key for key in values if self.table.column(key) is None]
-        for key in missing:  # колонки, которых в таблице нет, появятся при сохранении
-            self.table.add_column(COLUMN_NAMES[key][0], BAG_COLUMNS[key])
-        if missing:
-            self._build_form()
-            self._fill_form()
-        for key, value in values.items():
-            self.set_value(self.table.column(key), value, [self.i])
+        with self.table.batch():  # новые колонки и три значения — один шаг отмены
+            for key in missing:  # колонки, которых в таблице нет, появятся при сохранении
+                self.add_column(COLUMN_NAMES[key][0], BAG_COLUMNS[key])
+            for key, value in values.items():
+                self.set_value(self.table.column(key), value, [self.i])
         self.bag_button.setChecked(False)
         self.draw()  # подпись «бэг: …» над кадром
         self.message.emit(f"Бэг: высота {values['bag_height']} мм, длина {values['bag_length']} мм (кадр {self.number}) "
@@ -750,8 +987,9 @@ class RecordsPage(QWidget):
         if not self.center_button.isChecked():
             return
         cx, cy = round(x), round(y)
-        self.set_value(self.table.column("cx"), cx)
-        self.set_value(self.table.column("cy"), cy)
+        with self.table.batch():  # c_x и c_y — один шаг отмены
+            self.set_value(self.table.column("cx"), cx)
+            self.set_value(self.table.column("cy"), cy)
         self.center_button.setChecked(False)
         self.message.emit(f"Центр затравки: {self.table.column('cx')} = {cx}, {self.table.column('cy')} = {cy}")
 
@@ -1036,7 +1274,9 @@ class RecordsPage(QWidget):
         self.go(following)
 
     def shutdown(self) -> None:
-        """Окно закрывается: остановить таймеры и фоновый расчёт."""
+        """Окно закрывается: остановить таймеры и фоновый расчёт, закрыть окно полной таблицы."""
         for timer in (self.poll_timer, self.slideshow_timer, self.rim_timer, self.params_timer):
             timer.stop()
+        if self.table_editor is not None:
+            self.table_editor.close()
         self.computer.shutdown()

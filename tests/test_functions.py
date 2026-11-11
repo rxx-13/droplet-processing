@@ -189,13 +189,70 @@ def test_table_edit_adds_missing_column_at_first_free_place(tmp_path):
     path = _table(tmp_path / "t.xlsx", TABLE_HEADERS, [[1, "0201", "w"], [1, "0202", "w"]])
     table = EditableTable(path)
     table.add_column("bag_length", "длина бэга, мм")
-    table.add_column("bag_frame", "кадр")  # без значений — в файл не попадёт
+    table.add_column("bag_frame", "кадр")  # пустая колонка тоже попадёт в файл
     table.set(1, "bag_length", 41.25)
     table.save()
     sheet = load_workbook(path).active
-    assert [c.value for c in sheet[1]] == TABLE_HEADERS + ["bag_length"]
+    assert [c.value for c in sheet[1]] == TABLE_HEADERS + ["bag_length", "bag_frame"]
     assert (sheet["I2"].value, sheet["I3"].value, sheet["I4"].value) == ("длина бэга, мм", None, 41.25)
-    assert table.headers[-1] == "bag_length" and not table.new_columns
+    assert (sheet["J2"].value, sheet["J3"].value) == ("кадр", None)
+    assert table.headers[-2:] == ["bag_length", "bag_frame"] and not table.new_columns
+
+
+def test_table_edit_undo_redo_steps_groups_and_new_columns(tmp_path):
+    path = _table(tmp_path / "t.xlsx", TABLE_HEADERS, [[1, "0201", "w"], [1, "0202", "w"]])
+    table = EditableTable(path)
+    assert not table.dirty and table.undo() is None and table.redo() is None
+
+    table.set(0, "rim", 100)
+    table.set(1, "rim", 200)
+    assert table.dirty and len(table.undo_stack) == 2
+    table.undo()
+    assert table.value(1, "rim") is None and table.value(0, "rim") == 100
+    table.undo()
+    assert not table.dirty and table.undo() is None
+    table.redo()
+    table.redo()
+    assert (table.value(0, "rim"), table.value(1, "rim")) == (100, 200)
+
+    with table.batch():  # правка нескольких ячеек — один шаг
+        table.set(0, "rim", 300)
+        table.set(1, "rim", 400)
+    assert len(table.undo_stack) == 3
+    table.undo()
+    assert (table.value(0, "rim"), table.value(1, "rim")) == (100, 200)
+
+    table.set(0, "rim", 150, merge="поле")  # набор текста в поле — один шаг
+    table.set(0, "rim", 250, merge="поле")
+    assert len(table.undo_stack) == 3
+    table.undo()
+    assert table.value(0, "rim") == 100
+    table.redo()
+    assert table.value(0, "rim") == 250
+
+    table.add_column("ustar", "скорость")
+    table.set(0, "ustar", 0.5)
+    table.undo()
+    table.undo()
+    assert "ustar" not in table.headers and "ustar" not in table.descriptions
+    table.redo()
+    assert table.headers[-1] == "ustar" and table.value(0, "ustar") is None
+    table.redo()
+    assert table.value(0, "ustar") == 0.5
+
+    cells = table.fill_down(0, [0, 1], ["ustar"])  # растянуть значение на вторую запись
+    assert cells == [(1, "ustar", 0.5)] and table.value(1, "ustar") == 0.5
+    table.undo()
+    assert table.value(1, "ustar") is None
+
+    table.save()  # после записи отменять нечего, значения — в файле
+    assert not table.dirty and table.undo() is None and not table.undo_stack
+    sheet = load_workbook(path).active
+    assert (sheet["F3"].value, sheet["F4"].value, sheet["I3"].value) == (250, 200, 0.5)
+    assert sheet["I2"].value == "скорость"
+    table.set(0, "rim", 1)
+    table.discard()  # «вернуть как в файлах»
+    assert not table.dirty and table.value(0, "rim") == 250 and "ustar" in table.headers
 
 
 def test_table_edit_does_not_overwrite_rows_changed_in_excel_or_open_file(tmp_path, monkeypatch):

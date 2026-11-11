@@ -1,4 +1,4 @@
-"""Таблица записей (xlsx) для приложения: все колонки, несохранённые правки, автозаполнение, запись.
+"""Таблица записей (xlsx) для приложения: все колонки, несохранённые правки, отмена, автозаполнение, запись.
 
 Чтение — по тем же правилам, что read_records (lib/common/records.py): первый лист, строка 1 — заголовки,
 строка 2 — описания колонок, данные — с 3-й строки. Но здесь берутся все колонки (их набор — из заголовков,
@@ -12,16 +12,22 @@
 (rec_name) — на случай, если таблицу тем временем правили в Excel. Если файл открыт в Excel, он не
 трогается, а возникает TableSaveError с понятным текстом.
 
+Отмена — по шагам (undo/redo), а не вся таблица сразу: шаг — это одна правка ячейки, правка нескольких
+ячеек вместе (batch; «как у предыдущих», растягивание значения) или добавленная колонка. Пока набирают
+одно значение в поле, его правки склеиваются в один шаг (merge); break_merge заканчивает такую серию.
+После save и discard история очищается: отменять сохранённое нельзя (это уже в файле).
+
 Автозаполнение: подсказка для пустого поля — значение той же колонки у предыдущей заполненной записи
 (заполненная — с диапазоном кадров); «как у предыдущих» — колонки, одинаковые во всех заполненных записях.
 """
 
 import io
 import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from openpyxl import load_workbook
 
@@ -38,6 +44,35 @@ class TableRow:
 
     excel_row: int
     values: dict[str, Any]
+
+
+_NONE = object()  # «правки в changes не было» (для истории отмены; None — допустимое значение ячейки)
+
+
+@dataclass
+class _Edit:
+    """Одна ячейка в шаге отмены: before/after — её значение в changes до и после правки (или _NONE)."""
+
+    i: int
+    header: str
+    before: Any
+    after: Any
+
+
+@dataclass
+class _Step:
+    """Шаг истории отмены: правки ячеек и добавленные в нём колонки; merge — ключ серии правок."""
+
+    merge: str | None
+    edits: list[_Edit]
+    columns: list[tuple[str, str]]  # добавленные колонки: заголовок, описание
+
+
+def _same_state(before: Any, after: Any) -> bool:
+    """Одинаково ли состояние ячейки в changes до и после правки (учитывая, что правки могло не быть)."""
+    if before is _NONE or after is _NONE:
+        return before is after
+    return same_value(before, after)
 
 
 def is_empty(value: Any) -> bool:
@@ -135,11 +170,13 @@ def save_cells(path: Path, cells: dict[tuple[int, str], Any], names: dict[int, s
 
 
 class EditableTable:
-    """Таблица записей с несохранёнными правками.
+    """Таблица записей с несохранёнными правками и историей отмены.
 
     Строки — по номеру i (с 0, в порядке таблицы), колонки — по заголовку. value(i, h) — значение с учётом
     правок; set(i, h, v) — правка (значение, равное исходному, правку снимает); save — запись в файл.
     path — файл таблицы (TABLE_FILE: полный путь или от папки проекта); headers, descriptions, rows — как возвращает read_table.
+    undo_stack / redo_stack — шаги отмены (последний — в конце), dirty — есть ли несохранённые правки
+    (ячейки или добавленные колонки).
     """
 
     def __init__(self, path: Path) -> None:
@@ -147,9 +184,18 @@ class EditableTable:
         self.headers, self.descriptions, self.rows = read_table(self.path)
         self.changes: dict[tuple[int, str], Any] = {}
         self.new_columns: dict[str, str] = {}  # добавленные колонки, которых ещё нет в файле: заголовок -> описание
+        self.undo_stack: list[_Step] = []
+        self.redo_stack: list[_Step] = []
+        self._group: _Step | None = None  # накапливаемые правки batch()
+        self._depth = 0  # вложенность batch()
 
     def __len__(self) -> int:
         return len(self.rows)
+
+    @property
+    def dirty(self) -> bool:
+        """Есть ли несохранённые правки: изменённые ячейки или добавленные колонки."""
+        return bool(self.changes or self.new_columns)
 
     # --- значения
     def column(self, key: str) -> str | None:
@@ -157,11 +203,12 @@ class EditableTable:
         return next((h for h in COLUMN_NAMES[key] if h in self.headers), None)
 
     def add_column(self, header: str, description: str) -> None:
-        """Добавить колонку, которой нет в таблице (в файл она попадёт при save, если в ней есть значения)."""
+        """Добавить колонку, которой нет в таблице (в файл она попадёт при save, даже пустая)."""
         if header not in self.headers:
             self.headers.append(header)
             self.descriptions[header] = description
             self.new_columns[header] = description
+            self._record_column(header, description)
 
     def original(self, i: int, header: str) -> Any:
         """Значение ячейки в файле (без правок)."""
@@ -171,12 +218,122 @@ class EditableTable:
         """Значение ячейки с учётом правок."""
         return self.changes.get((i, header), self.original(i, header))
 
-    def set(self, i: int, header: str, value: Any) -> None:
-        """Правка ячейки; значение, равное исходному, снимает правку."""
+    def set(self, i: int, header: str, value: Any, merge: str | None = None) -> None:
+        """Правка ячейки; значение, равное исходному, снимает правку.
+
+        merge — ключ серии правок: правки с тем же ключом подряд (набор текста в поле, движение ползунка)
+        становятся одним шагом отмены; break_merge заканчивает серию.
+        """
+        key = (i, header)
+        before = self.changes.get(key, _NONE)
         if same_value(value, self.original(i, header)):
-            self.changes.pop((i, header), None)
+            self.changes.pop(key, None)
         else:
-            self.changes[(i, header)] = value
+            self.changes[key] = value
+        after = self.changes.get(key, _NONE)
+        if not _same_state(before, after):
+            self._record_edit(i, header, before, after, merge)
+
+    # --- история отмены
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Сгруппировать правки внутри блока в один шаг отмены (вложенные блоки — тот же шаг)."""
+        self._depth += 1
+        if self._depth == 1:
+            self._group = _Step(None, [], [])
+        try:
+            yield
+        finally:
+            self._depth -= 1
+            if self._depth == 0:
+                if self._group is not None and (self._group.edits or self._group.columns):
+                    self.undo_stack.append(self._group)
+                    self.redo_stack.clear()
+                self._group = None
+
+    def break_merge(self) -> None:
+        """Закончить серию правок с общим ключом merge: следующая правка начнёт новый шаг отмены."""
+        if self.undo_stack and self.undo_stack[-1].merge is not None:
+            self.undo_stack[-1].merge = None
+
+    def _record_edit(self, i: int, header: str, before: Any, after: Any, merge: str | None) -> None:
+        """Запомнить правку ячейки для отмены: в группу, в шаг серии merge или в новый шаг."""
+        edit = _Edit(i, header, before, after)
+        if self._group is not None:
+            self._group.edits.append(edit)
+            return
+        if merge is not None and self.undo_stack and self.undo_stack[-1].merge == merge:
+            step = self.undo_stack[-1]
+            for index, old in enumerate(step.edits):
+                if old.i == i and old.header == header:
+                    if _same_state(old.before, after):  # набрали обратно как было — шаг не нужен
+                        step.edits.pop(index)
+                        if not step.edits and not step.columns:
+                            self.undo_stack.pop()
+                    else:
+                        old.after = after  # та же ячейка в той же серии — обновляем конечное значение
+                    break
+            else:
+                step.edits.append(edit)
+            self.redo_stack.clear()
+            return
+        self.undo_stack.append(_Step(merge, [edit], []))
+        self.redo_stack.clear()
+
+    def _record_column(self, header: str, description: str) -> None:
+        """Запомнить добавление колонки для отмены."""
+        if self._group is not None:
+            self._group.columns.append((header, description))
+            return
+        self.undo_stack.append(_Step(None, [], [(header, description)]))
+        self.redo_stack.clear()
+
+    def undo(self) -> _Step | None:
+        """Отменить последний шаг; None — отменять нечего."""
+        self.break_merge()
+        if not self.undo_stack:
+            return None
+        step = self.undo_stack.pop()
+        for edit in reversed(step.edits):
+            if edit.before is _NONE:
+                self.changes.pop((edit.i, edit.header), None)
+            else:
+                self.changes[(edit.i, edit.header)] = edit.before
+        for header, _ in reversed(step.columns):
+            if header in self.headers:
+                self.headers.remove(header)
+            self.descriptions.pop(header, None)
+            self.new_columns.pop(header, None)
+            for key in [key for key in self.changes if key[1] == header]:
+                self.changes.pop(key, None)
+        self.redo_stack.append(step)
+        return step
+
+    def redo(self) -> _Step | None:
+        """Повторить отменённый шаг; None — повторять нечего."""
+        self.break_merge()
+        if not self.redo_stack:
+            return None
+        step = self.redo_stack.pop()
+        for header, description in step.columns:
+            if header not in self.headers:
+                self.headers.append(header)
+                self.descriptions[header] = description
+                self.new_columns[header] = description
+        for edit in step.edits:
+            if edit.after is _NONE:
+                self.changes.pop((edit.i, edit.header), None)
+            else:
+                self.changes[(edit.i, edit.header)] = edit.after
+        self.undo_stack.append(step)
+        return step
+
+    def clear_history(self) -> None:
+        """Забыть историю отмены (после save и discard отменять нечего — это уже файл)."""
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._group = None
+        self._depth = 0
 
     def changed(self, i: int, header: str | None = None) -> bool:
         """Есть ли несохранённая правка в строке i (или в её ячейке header)."""
@@ -285,14 +442,30 @@ class EditableTable:
                 filled.append(header)
         return filled
 
+    def fill_down(self, source: int, rows: list[int], headers: list[str]) -> list[tuple[int, str, Any]]:
+        """Растянуть значения строки source по колонкам headers на строки rows одной правкой.
+
+        Возвращает правки [(строка, колонка, значение)] — только ячейки, которые действительно меняются
+        (source и одинаковые значения пропускаются).
+        """
+        cells = [(i, header, self.value(source, header))
+                 for i in rows if i != source for header in headers
+                 if not same_value(self.value(source, header), self.value(i, header))]
+        if cells:
+            with self.batch():
+                for i, header, value in cells:
+                    self.set(i, header, value)
+        return cells
+
     # --- файл
     def save(self, backup_dir: Path | None = None) -> Path | None:
-        """Записать правки в файл (только изменённые ячейки) и перечитать таблицу.
+        """Записать правки в файл (только изменённые ячейки и добавленные колонки) и перечитать таблицу.
 
         backup_dir — папка, куда сначала кладётся копия файла (None — без копии). Возвращает путь копии
-        (или None). Не удалось записать — TableSaveError, правки остаются несохранёнными.
+        (или None). Не удалось записать — TableSaveError, правки остаются несохранёнными. После записи
+        история отмены очищается.
         """
-        if not self.changes:
+        if not self.dirty:
             return None
         backup = None
         if backup_dir is not None:
@@ -302,8 +475,14 @@ class EditableTable:
         name_header = self.column("rec_name")
         cells = {(self.rows[i].excel_row, header): value for (i, header), value in self.changes.items()}
         names = {self.rows[i].excel_row: _text(self.original(i, name_header)) for i, _ in self.changes}
-        used = {header for _, header in self.changes}
-        save_cells(self.path, cells, names, name_header, {h: d for h, d in self.new_columns.items() if h in used})
+        save_cells(self.path, cells, names, name_header, dict(self.new_columns))
         self.headers, self.descriptions, self.rows = read_table(self.path)
         self.changes, self.new_columns = {}, {}
+        self.clear_history()
         return backup
+
+    def discard(self) -> None:
+        """Забыть правки: перечитать таблицу из файла и очистить историю отмены."""
+        self.headers, self.descriptions, self.rows = read_table(self.path)
+        self.changes, self.new_columns = {}, {}
+        self.clear_history()

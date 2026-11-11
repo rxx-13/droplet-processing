@@ -124,9 +124,13 @@ run.py → MainWindow (window.py)                  две части: «Обра
 │                                                «Сделать текущим», вкладки ниже, Ctrl+S, F5) и «Обработка результатов»
 │     current_experiment, set_current_experiment (lib/common/config_edit.py) — experiments/current.py
 ├─ RecordsPage (records_page.py)                 вкладка «Записи»
-│   ├─ EditableTable (lib/common/table_edit.py)  таблица: все колонки, правки в памяти, автозаполнение
-│   │     read_table; record (как read_records); suggestion, fill_like_previous;
-│   │     save → save_cells (только изменённые ячейки; копия таблицы — в <OUTPUT_DIR>/table_backups)
+│   ├─ EditableTable (lib/common/table_edit.py)  таблица: все колонки, правки в памяти, отмена, автозаполнение
+│   │     read_table; record (как read_records); suggestion, fill_like_previous, fill_down;
+│   │     undo / redo / batch (шаги отмены); save → save_cells (только изменённые ячейки;
+│   │     копия таблицы — в <OUTPUT_DIR>/table_backups)
+│   ├─ TableEditor (table_editor.py)             окно полной таблицы (Ctrl+T): ячейки, новые колонки,
+│   │     растягивание значений (маркер в углу выделения, Ctrl+D), Ctrl+Z / Ctrl+Y; подсветка связи
+│   │     с полями сайдбара (column_focused, highlight_field, cells_changed, table_reloaded)
 │   ├─ Frames                                    все кадры записи (не только диапазон)
 │   ├─ FrameComputer (frame_view.py)             расчёт кадров в процессах: текущий — в своём, впрок — в остальных
 │   │     compute_frame (lib/st1/preview.py)     st1 для одного кадра — тот же, что у окна просмотра
@@ -197,29 +201,42 @@ run.py → MainWindow (window.py)                  две части: «Обра
 |---|---|---|---|---|
 | `TableSaveError` | таблицу не удалось записать (файл не изменён) | `save_cells`, `RecordsPage.save` | — | — |
 | `TableRow` | строка данных: номер строки Excel и значения по заголовкам | `read_table` | — | — |
+| `_Edit` | ячейка в шаге отмены: строка, колонка, значения до и после | `EditableTable` | — | — |
+| `_Step` | шаг отмены: правки ячеек, добавленные колонки, ключ серии merge | `EditableTable` | — | — |
+| `_same_state` | одинаково ли состояние ячейки в правках до и после (правки могло не быть) | `EditableTable.set` | `same_value` | — |
 | `is_empty` | пустая ли ячейка | `same_value`, `EditableTable` | — | — |
 | `same_value` | одинаковы ли значения ячеек (200 = 200.0) | `EditableTable`, `RecordsPage` | `is_empty` | — |
-| `format_value` | значение ячейки → текст поля ввода | `RecordsPage` | — | — |
+| `format_value` | значение ячейки → текст поля ввода | `RecordsPage`, `TableEditor` | — | — |
 | `read_table` | все колонки (заголовки, описания) и строки с rec_name | `EditableTable` | `TableRow`, `_text` | — |
 | `save_cells` | запись изменённых ячеек в xlsx (остальное не трогается) и новых колонок | `EditableTable.save` | `_text` | — |
-| `EditableTable` | таблица с несохранёнными правками | `RecordsPage`, tests | `read_table` | — |
+| `EditableTable` | таблица с несохранёнными правками и историей отмены | `RecordsPage`, `TableEditor`, tests | `read_table` | — |
+| `EditableTable.dirty` | есть ли несохранённые правки (ячейки или новые колонки) | `RecordsPage`, `TableEditor` | — | — |
 | `EditableTable.column` | заголовок колонки величины (rim или rim_new, cx или c_x …) | `EditableTable`, `RecordsPage` | `COLUMN_NAMES` | — |
-| `EditableTable.add_column` | добавить колонку, которой нет в таблице (в файл — при save) | `RecordsPage._bag_click`, tests | — | — |
+| `EditableTable.add_column` | добавить колонку, которой нет в таблице (в файл — при save, даже пустую) | `RecordsPage.add_column`, tests | — | — |
 | `EditableTable.original` | значение ячейки в файле | `EditableTable` | — | — |
-| `EditableTable.value` | значение ячейки с учётом правок | `EditableTable`, `RecordsPage` | — | — |
-| `EditableTable.set` | правка ячейки | `EditableTable.fill_like_previous`, `RecordsPage.set_value` | `same_value` | — |
-| `EditableTable.changed` | есть ли правка в строке или ячейке | `RecordsPage` | — | — |
+| `EditableTable.value` | значение ячейки с учётом правок | `EditableTable`, `RecordsPage`, `TableEditor` | — | — |
+| `EditableTable.set` | правка ячейки; merge — серия правок одного поля — один шаг отмены | `EditableTable.fill_like_previous`, `RecordsPage.set_value` | `same_value`, `_same_state` | — |
+| `EditableTable.batch` | правки внутри блока — один шаг отмены (вложенные — тот же) | `RecordsPage.set_value`, `apply_cells`, `fill_like_previous`, `EditableTable.fill_down`, `_bag_click` | — | — |
+| `EditableTable.break_merge` | закончить серию правок merge (следующая правка — новый шаг) | `RecordsPage._break_merge`, `EditableTable.undo` | — | — |
+| `EditableTable._record_edit` | запомнить правку ячейки в шаге отмены (в группу, серию или новый шаг) | `EditableTable.set` | — | — |
+| `EditableTable._record_column` | запомнить добавление колонки в шаге отмены | `EditableTable.add_column` | — | — |
+| `EditableTable.undo` | отменить последний шаг | `RecordsPage.undo`, tests | — | — |
+| `EditableTable.redo` | повторить отменённый шаг | `RecordsPage.redo`, tests | — | — |
+| `EditableTable.clear_history` | забыть историю отмены (после save и discard) | `EditableTable.save`, `EditableTable.discard` | — | — |
+| `EditableTable.changed` | есть ли правка в строке или ячейке | `RecordsPage`, `TableEditor` | — | — |
 | `EditableTable.name` | rec_name строки | `RecordsPage` | — | — |
 | `EditableTable.is_text` | текстовая ли колонка | `EditableTable.parse` | — | — |
 | `EditableTable.is_numeric` | числовая ли колонка | `EditableTable.parse` | — | — |
-| `EditableTable.parse` | текст поля → значение ячейки (число, текст, пусто) | `RecordsPage` | `EditableTable.is_text`, `EditableTable.is_numeric` | — |
+| `EditableTable.parse` | текст поля → значение ячейки (число, текст, пусто) | `RecordsPage`, `TableEditor` | `EditableTable.is_text`, `EditableTable.is_numeric` | — |
 | `EditableTable.record` | строка как `Record` (те же правила, что `read_records`) | `EditableTable`, `RecordsPage` | `Record`, `_text`, `_number`, `_integer` | — |
 | `EditableTable.filled` | заполнена ли запись (задан диапазон кадров) | `EditableTable` | `EditableTable.record` | — |
 | `EditableTable.previous_filled` | ближайшая выше (иначе ниже) заполненная запись | `EditableTable.suggestion` | `EditableTable.filled` | — |
 | `EditableTable.suggestion` | подсказка для пустого поля | `RecordsPage` | `EditableTable.previous_filled` | — |
 | `EditableTable.common_values` | колонки, одинаковые во всех заполненных записях | `EditableTable.fill_like_previous`, `RecordsPage` | `same_value` | — |
 | `EditableTable.fill_like_previous` | «как у предыдущих»: пустые поля — общими значениями | `RecordsPage.fill_like_previous` | `EditableTable.common_values` | — |
-| `EditableTable.save` | копия таблицы, запись правок, перечитывание | `RecordsPage.save` | `save_cells`, `read_table` | — |
+| `EditableTable.fill_down` | растянуть значения строки на другие строки одной правкой | `RecordsPage.fill_down`, tests | `same_value`, `batch` | — |
+| `EditableTable.save` | копия таблицы, запись правок и новых колонок, перечитывание, очистка истории | `RecordsPage.save` | `save_cells`, `read_table`, `clear_history` | — |
+| `EditableTable.discard` | «вернуть как в файлах»: перечитать таблицу, очистить историю | `RecordsPage.discard` | `read_table`, `clear_history` | — |
 
 ### [lib/common/config_edit.py](lib/common/config_edit.py) — файлы настроек для приложения
 
@@ -461,7 +478,15 @@ run.py → MainWindow (window.py)                  две части: «Обра
     `fill_like_previous`; ползунок rim — `rim_to_slider`, `slider_to_rim`), пересчёт после правки rim
     (`recompute`), правки панели «Настройки» (`apply_parameters`), «Капли и PIV»: считать или из результатов
     st1 (`_source_changed`, `_computes`, `_saved_at`), размер бэга (`_bag_mode`, `_bag_click`, `_bag_text`),
-    запись таблицы (`save`);
+    запись таблицы (`save`), отмена по шагам (`undo`, `redo`, `_history_done`), правка нескольких ячеек
+    (`apply_cells`, `_cells_done`), растягивание (`fill_down`), новая колонка (`add_column`), окно полной
+    таблицы (`open_table_editor`), подсветка связи (`highlight_field`, `column_focused`, сигналы
+    `cells_changed` / `table_reloaded`);
+  - [table_editor.py](app/table_editor.py): `TableEditor` — окно полной таблицы (Ctrl+T): перестройка
+    (`refresh`), правка ячейки (`_item_changed`), новые колонки (`add_column`, `AddColumnDialog`), растягивание
+    (Ctrl+D — `fill_down`; маркер в углу выделения — `TableGrid`, `FillHandle`), отмена и повтор (`undo`,
+    `redo`), сохранение (`save`), «вернуть как в файлах» (`revert`), подсветка столбца (`highlight_column`,
+    `ColumnHighlightDelegate`; щелчок по ячейке — `page.highlight_field`), Delete — очистить (`clear_selected`);
   - [params_page.py](app/params_page.py): `ParamsPanel` — панель «Настройки» (`load`, `working`, `set_text`,
     `save`, `discard`, поиск — `_filter`); `ParamField` — поле значения с ползунками (`slider_range`,
     `number_text`, `_numbers`);
@@ -580,8 +605,8 @@ MATLAB сохранена), `PIV_params` (с `piv_grid`), `imSize`, `mean_im1`, 
 
 | Файл | Что проверяет |
 |---|---|
-| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py; добавление колонки в таблицу; обработка результатов: выборка, окна, гистограмма, статистика по окнам, серии; проект LabPlot и CSV; формулы: защита, порядок параметров, свои колонки, подгонка; пути в settings.py от папки проекта; настройка из колонки таблицы (`record_setting`, `Record.number`); пример эксперимента: читается и даёт заложенные зависимости (если его результаты есть на диске) |
-| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта, флажок «удалённый бэг», FPS из колонки таблицы; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области; размер бэга (четыре щелчка, колонки добавляются в таблицу); «Обработка результатов»: загрузка st4, выборка, графики, экспорт; своя колонка, подгонка, лог-ось, настройки в файл и обратно; флажки: щелчок по строке, протягивание, Shift |
+| [test_functions.py](tests/test_functions.py) | отдельные функции на маленьких примерах: сортировка кадров, формат .dat, таблица записей, нумерация объектов, `disk`, медиана, фильтр PIV, полином, пересечение отрезков, единицы, ручные области; таблица для приложения: запись только изменённых ячеек с сохранением форматирования, копия таблицы, автозаполнение, защита от затирания строк, правленных в Excel, и от открытого в Excel файла; файлы настроек: запись только изменённых значений (остальное байт в байт), проверка вида значения, файл, изменённый снаружи, не затирается, выбор эксперимента в current.py; добавление колонки в таблицу (пустая тоже записывается); отмена и повтор по шагам (ячейка, серия набора, группа ячеек, колонка), растягивание значений, «вернуть как в файлах», очистка истории после сохранения; обработка результатов: выборка, окна, гистограмма, статистика по окнам, серии; проект LabPlot и CSV; формулы: защита, порядок параметров, свои колонки, подгонка; пути в settings.py от папки проекта; настройка из колонки таблицы (`record_setting`, `Record.number`); пример эксперимента: читается и даёт заложенные зависимости (если его результаты есть на диске) |
+| [test_synthetic.py](tests/test_synthetic.py) | искусственная съёмка с известными каплями: st1 → st2 → st4 восстанавливают положения, радиусы, скорости; окно просмотра (виды, слайдшоу) и совпадение его расчёта с st1; приложение без экрана: записи, виды 1–5, слайдшоу, подсказка rim, «начало / конец = этот кадр», центр затравки, сохранение таблицы, капли и PIV из результатов st1 без пересчёта, флажок «удалённый бэг», FPS из колонки таблицы; панель «Настройки»: правка порога пересчитывает кадр, ползунок, ошибка ввода, сохранение в файл, «вернуть как в файлах»; «Запуск»: st1 → st2 → st4 в фоновом процессе дают те же файлы, что скрипты main/, ход работы в окне, «Остановить»; ошибка записи останавливает её цепочку; «Результаты»: траектории, области; размер бэга (четыре щелчка, колонки добавляются в таблицу); окно полной таблицы: правка ячейки, Ctrl+Z / Ctrl+Y, растягивание вниз (Ctrl+D и одна ячейка до конца), новая колонка, подсветка «поле ↔ столбец», сохранение вместе с вкладкой; «Обработка результатов»: загрузка st4, выборка, графики, экспорт; своя колонка, подгонка, лог-ось, настройки в файл и обратно; флажки: щелчок по строке, протягивание, Shift |
 | [test_docs.py](tests/test_docs.py) | описания у всех функций (lib/, main/, tools/, app/); полнота таблиц этого файла |
 | [compare_with_matlab.py](tests/compare_with_matlab.py) | не тест, а отчёт: насколько результаты совпадают с результатами MATLAB |
 
