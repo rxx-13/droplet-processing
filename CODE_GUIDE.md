@@ -493,7 +493,8 @@ run.py → MainWindow (window.py)                  две части: «Обра
     запись таблицы (`save`), общая отмена по шагам (`undo`, `redo`; шаги таблицы — `_table_step`,
     `_undo_table`, `_redo_table`; настроек — `_params_step`; общий порядок — `UndoManager`), правка
     нескольких ячеек (`apply_cells`, `_cells_done`), растягивание (`fill_down`, `fill_right`), новая
-    колонка (`add_column`), окно полной таблицы (`open_table_editor`), подсветка связи (`highlight_field`,
+    колонка (`add_column`), «строка воды» — щелчок по кадру задаёт `SURFACE_ROW` (`_pick_setting`,
+    `_surface_clicked`, `_end_pick`), окно полной таблицы (`open_table_editor`), подсветка связи (`highlight_field`,
     `column_focused`, сигналы `cells_changed` / `table_reloaded`);
   - [table_editor.py](app/table_editor.py): `TableEditor` — окно полной таблицы (Ctrl+T): перестройка
     (`refresh`), правка ячейки (`_item_changed`), новые колонки (`add_column`, `AddColumnDialog`), растягивание
@@ -507,8 +508,10 @@ run.py → MainWindow (window.py)                  две части: «Обра
     `forget`, `clear`); шаги таблицы и панели настроек идут в общем порядке, MainWindow ставит
     Ctrl+Z / Ctrl+Y на всё приложение (`_undo`, `_redo`);
   - [params_page.py](app/params_page.py): `ParamsPanel` — панель «Настройки» (`load`, `working`, `set_text`,
-    `save`, `discard`, `undo`, `redo`, история — `_record`, `_apply`, `_reset_history`, поиск — `_filter`);
-    `ParamField` — поле значения с ползунками (`slider_range`, `number_text`, `_numbers`);
+    `save`, `discard`, `undo`, `redo`, история — `_record`, `_apply`, `_reset_history`, поиск — `_filter`;
+    `pick_requested` — нажали «по кадру» у SURFACE_ROW);
+    `ParamField` — поле значения с ползунками (`slider_range`, `number_text`, `_numbers`; `pick` — кнопка
+    «по кадру» у SURFACE_ROW);
   - [jobs_page.py](app/jobs_page.py): `CheckPainter` — флажки в списках как выделение в проводнике (щелчок по
     строке, протягивание мышью, Shift — диапазон; и в списке экспериментов «Обработки результатов»);
     `JobsPage` — вкладка «Запуск» (`refresh`, `set_checked`, `start`, `stop`,
@@ -526,8 +529,8 @@ run.py → MainWindow (window.py)                  две части: «Обра
     (`export`, `series_table`, `fit_table`, `_export_dialog`), настройки в файл (`state`, `set_state`; старое
     `series_by` читается как `color_by`);
   - [frame_view.py](app/frame_view.py): `FrameComputer` — расчёт кадров в процессах (`configure`, `focus`,
-    `collect`, `result`); `FrameView` — показ видов 1–5 (`show`), крестик центра (`set_center`), щелчок по кадру
-    (сигнал `clicked`); `FrameScale` — шкала кадров.
+    `collect`, `result`); `FrameView` — показ видов 1–5 (`show`), крестик центра (`set_center`), линия строки
+    воды (`set_surface`), щелчок по кадру (сигнал `clicked`); `FrameScale` — шкала кадров.
 
 ## 4. Настройки и пороги
 
@@ -544,7 +547,7 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | `RECORDS` | settings | `run_stage`, `Viewer` | какие записи обрабатывать |
 | `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с; число или имя колонки таблицы (`record_setting`) |
 | `FPS` | settings | main/st4, `RecordPreview`, `RecordsPage` | перевод px/кадр → м/с; число (одно на эксперимент) или имя колонки таблицы (`FPS = "fps"`) — тогда у каждой записи своё (`record_setting`) |
-| `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода; число или имя колонки таблицы (`record_setting`); если в строке записи числа нет — приложение показывает кадр и причину, расчёт видов 2–5 отключает |
+| `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода; число или имя колонки таблицы (`record_setting`); задаётся и щелчком по кадру (кнопка «по кадру» в «Настройках» — `_pick_setting`); если в строке записи числа нет — приложение показывает кадр и причину, расчёт видов 2–5 отключает |
 | `BACKGROUND_FRAME` | settings | main/st1, `compute_frame` | какой кадр — фон; число или имя колонки таблицы (`record_setting`) |
 | `ERASE_REGIONS` | settings | `RimRemover` (main/st1, `compute_frame`) | вручную закрашиваемые области |
 | `AREA_X` | settings | main/st4 | границы областей по x |

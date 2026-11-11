@@ -8,7 +8,10 @@
 с подсветкой диапазона, кнопки «Начало = этот кадр», «Конец = этот кадр», «Центр затравки» (щелчок по
 кадру -> c_x, c_y, px с 1) и «Размер бэга» (четыре щелчка: две точки по вертикали — высота, две по
 горизонтали — длина; -> bag_hight, bag_length, мм, и bag_frame — номер кадра; недостающие колонки таблицы
-добавляются). Номер кадра — номер файла записи, как start_frame и fin_frame в таблице.
+добавляются). «Строка воды» — у значения SURFACE_ROW на вкладке «Настройки» кнопка «по кадру»: щелчок
+по кадру задаёт SURFACE_ROW — в settings.py (если там число) или в колонку таблицы, имя которой записано
+в SURFACE_ROW (только текущей записи; недостающая колонка добавляется). Номер кадра — номер файла записи,
+как start_frame и fin_frame в таблице.
 «Капли и PIV» (рядом с видами): «считать с текущими настройками» — кадры считаются заново (видно, что дадут
 текущие rim и пороги); «взять из результатов st1» — виды 3–5 показывают сохранённое последним запуском st1
 (SavedResults из lib/st1/preview.py, мгновенно; вид 2 считается всегда — его в результатах нет).
@@ -39,7 +42,7 @@ table_reloaded (таблица перечитана или добавлена к
 
 Клавиши: ← → кадр (держать — быстро), Пробел — слайдшоу, Home End — первый / последний файл,
 PgUp PgDn — запись, 1–5 — вид, M — капли MATLAB, B — удалённый бэг, Esc — отменить «центр затравки»,
-Ctrl+T — полная таблица, Ctrl+Z / Ctrl+Y — отменить / повторить правку.
+«размер бэга» и «строку воды», Ctrl+T — полная таблица, Ctrl+Z / Ctrl+Y — отменить / повторить правку.
 """
 
 import logging
@@ -72,6 +75,7 @@ log = logging.getLogger(__name__)
 VIEW_KEYS = {"1": "frame", "2": "clean", "3": "droplets", "4": "piv", "5": "piv_matlab"}
 BAG_COLUMNS = {"bag_height": "высота бэга, мм", "bag_length": "длина бэга, мм",
                "bag_frame": "номер кадра (файла), на котором измерен бэг"}  # описания добавляемых колонок
+SURFACE_DESCRIPTION = "строка воды (с 1), начиная с которой вниз — вода"  # описание колонки SURFACE_ROW
 BAG_STEPS = ("щёлкните низ или верх бэга",
              "щёлкните другой край бэга по высоте (точка встанет на ту же вертикаль)",
              "щёлкните край бэга по длине",
@@ -184,6 +188,7 @@ class RecordsPage(QWidget):
         self.view_name = "frame"
         self.show_matlab = True
         self.show_bag = False  # полупрозрачная подсветка удалённого бэга на виде «капли»
+        self.pick_mode = False  # ждём щелчок по кадру: строка станет SURFACE_ROW
         self.matlab: tuple[list[np.ndarray], list[np.ndarray]] | None = None  # капли MATLAB по кадрам диапазона
         self.can_compute = False  # заданы кадры и rim (без них виды 2–5 не считаются)
         self.compute_error = ""  # почему расчёт невозможен (нет числа в колонке таблицы, например surface_row)
@@ -369,6 +374,7 @@ class RecordsPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setWidget(panel)
         self.params = ParamsPanel()
+        self.params.pick_requested.connect(self._pick_setting)
         self.params.edited.connect(lambda: self.params_timer.start())
         self.params.changed.connect(self.changed.emit)
         self.params.message.connect(self.message.emit)
@@ -929,7 +935,7 @@ class RecordsPage(QWidget):
             if self.rim_slider is not None and not self.rim_slider.isSliderDown():
                 self._sync_rim_slider()
             self.rim_timer.start()  # пересчёт после паузы
-        elif header in self._setting_columns():  # заполнили surface_row / fps / ... — расчёт оживает
+        elif header.lower() in self._setting_columns():  # заполнили surface_row / fps / ... — расчёт оживает
             self.rim_timer.start()  # пересчёт после паузы (как после правки rim)
         elif header in (t.column("start_frame"), t.column("fin_frame")):
             self._update_scale()
@@ -939,10 +945,11 @@ class RecordsPage(QWidget):
             self.view.set_center(record.cx, record.cy)
 
     def _setting_columns(self) -> set[str]:
-        """Колонки таблицы, из которых берутся числовые настройки (FPS = "fps", SURFACE_ROW = "surface_row")."""
+        """Колонки таблицы (в нижнем регистре), из которых берутся числовые настройки:
+        FPS = "fps", SURFACE_ROW = "surface_row"."""
         values = (getattr(self.settings, name, None)
                   for name in ("FPS", "SCALE_MM_PER_PX", "SURFACE_ROW", "BACKGROUND_FRAME"))
-        return {value for value in values if isinstance(value, str)}
+        return {value.strip().lower() for value in values if isinstance(value, str)}
 
     def _sync_rim_slider(self) -> None:
         """Ползунок rim — по значению rim выделенных записей."""
@@ -971,13 +978,15 @@ class RecordsPage(QWidget):
             self.message.emit("Внимание: начало диапазона позже конца")
 
     def _cancel_marking(self) -> None:
-        """Esc: отменить «центр затравки» и «размер бэга»."""
+        """Esc: отменить «центр затравки», «размер бэга» и «строку воды»."""
         self.center_button.setChecked(False)
         self.bag_button.setChecked(False)
+        self._end_pick()
 
     def _center_mode(self, on: bool) -> None:
         """Режим «центр затравки»: курсор-крестик; следующий щелчок по кадру задаёт c_x, c_y."""
         if on:
+            self._end_pick()
             self.bag_button.setChecked(False)
             self.message.emit("Щёлкните по кадру в центре затравки (Esc — отмена)")
         self.view.viewport().setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
@@ -985,6 +994,7 @@ class RecordsPage(QWidget):
     def _bag_mode(self, on: bool) -> None:
         """Режим «размер бэга»: четыре щелчка по кадру; выключение до четвёртой точки — отмена разметки."""
         if on:
+            self._end_pick()
             self.center_button.setChecked(False)
             self.bag_points = []
             self.view.set_bag([])
@@ -1033,9 +1043,61 @@ class RecordsPage(QWidget):
         text = f"бэг: высота {format_value(height) or '—'} мм, длина {format_value(length) or '—'} мм"
         return text + (f" (кадр {format_value(frame)})" if frame is not None else "")
 
+    def _pick_setting(self, name: str) -> None:
+        """Кнопка «по кадру» у значения настроек: следующий щелчок по кадру задаст SURFACE_ROW —
+        в settings.py (там число) или в колонку таблицы, имя которой записано в настройке."""
+        if name != "SURFACE_ROW":
+            return
+        if self.frames is None:
+            self.message.emit("Кадры не открыты — SURFACE_ROW по кадру не задать")
+            return
+        self.center_button.setChecked(False)  # их обработчики снимут перекрестие; ниже поставим своё
+        self.bag_button.setChecked(False)
+        self.pick_mode = True
+        self.view.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        settings, _ = self.params.working()
+        value = getattr(settings, "SURFACE_ROW", None)
+        where = f"колонку «{value}» таблицы" if isinstance(value, str) else "settings.py"
+        self.message.emit(f"Щёлкните по кадру: строка станет SURFACE_ROW — в {where} (Esc — отмена)")
+
+    def _surface_clicked(self, y: float) -> None:
+        """Щелчок в режиме «строка воды»: y кадра (px с 1) -> SURFACE_ROW — в settings.py (если там число)
+        или в колонку таблицы, имя которой записано в SURFACE_ROW (только текущая запись)."""
+        self._end_pick()
+        row = int(round(y))
+        if self.frames is not None:
+            row = min(max(row, 1), self.frames.height)
+        self.view.set_surface(row)
+        settings, _ = self.params.working()
+        value = getattr(settings, "SURFACE_ROW", None)
+        if isinstance(value, str):  # у каждой записи своё значение — в колонку таблицы
+            header = value.strip()
+            if not header:
+                self.message.emit("SURFACE_ROW — пустое имя колонки: впишите его в настройках")
+                return
+            header = next((h for h in self.table.headers if h.lower() == header.lower()), header)
+            with self.table.batch():  # новая колонка и значение — один шаг отмены
+                if header not in self.table.headers:
+                    self.add_column(header, SURFACE_DESCRIPTION)
+                self.set_value(header, row, rows=[self.i])
+            self.message.emit(f"{header} = {row} у записи {self.table.name(self.i)} — "
+                              "в таблицу по «Сохранить» (Ctrl+S)")
+        else:  # одно значение на эксперимент — в настройки
+            self.params.set_text("settings", "SURFACE_ROW", str(row))
+            self.message.emit(f"SURFACE_ROW = {row} — в настройки по «Сохранить» (Ctrl+S)")
+
+    def _end_pick(self) -> None:
+        """Закончить режим «строка воды» (щёлкнули по кадру или Esc): курсор — обычный."""
+        if self.pick_mode:
+            self.pick_mode = False
+            self.view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
     def _frame_clicked(self, x: float, y: float) -> None:
-        """Щелчок по кадру: в режиме «размер бэга» — очередная точка; в режиме «центр затравки» — c_x, c_y
-        выделенных записей (px с 1, целые)."""
+        """Щелчок по кадру: «строка воды» — SURFACE_ROW; «размер бэга» — очередная точка; «центр затравки» —
+        c_x, c_y выделенных записей (px с 1, целые)."""
+        if self.pick_mode:
+            self._surface_clicked(y)
+            return
         if self.bag_button.isChecked():
             self._bag_click(x, y)
             return
@@ -1058,12 +1120,14 @@ class RecordsPage(QWidget):
     def open_record(self, i: int, number: int | None = None) -> None:
         """Открыть запись i: её кадры (на кадре number, по умолчанию — начало диапазона), капли MATLAB."""
         self.stop_slideshow()
+        self._end_pick()
         self.i = i
         self.frames, self.frames_error, self.matlab = None, "", None
         self.saved, self.saved_key = None, None
         self.bag_button.setChecked(False)
         self.bag_points = []
         self.view.set_bag([])
+        self.view.set_surface(None)
         self.frame_cache.clear()
         record = self.table.record(i)
         if record is None:

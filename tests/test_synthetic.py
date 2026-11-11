@@ -5,7 +5,7 @@ r"""Проверка физики на искусственной съёмке: 
 что найдены все капли, их радиусы и скорость, а средние в области st4 в мм, м/с и мкм совпадают
 с заданными. Отдельно — что окно просмотра st1 (tools/st1_viewer.py) показывает все виды и что
 приложение (app/) открывает записи, показывает все виды, открывает запись и без значения настройки-колонки
-(с пояснением под кадром), заполняет и сохраняет таблицу и настройки,
+(с пояснением под кадром), задаёт SURFACE_ROW щелчком по кадру, заполняет и сохраняет таблицу и настройки,
 запускает стадии в фоновых процессах (с тем же результатом, что скрипты main/) и показывает результаты.
 От конкретного эксперимента и от MATLAB проверка не зависит.
 
@@ -349,6 +349,64 @@ def test_app_opens_record_with_missing_table_values_and_shows_the_reason(run, tm
     assert "капель: Python 15" in page.info.text()
     page.set_view("piv_matlab")  # без fps скорость не посчитать — кадр как есть и причина
     assert "fps" in page.info.text() and page.view.image.isVisible()
+    window.close()
+
+
+def test_app_sets_surface_row_by_clicking_the_frame(run, tmp_path):
+    """Кнопка «по кадру» у SURFACE_ROW: щелчок по кадру задаёт строку воды — в settings.py, если
+    SURFACE_ROW число, или в колонку таблицы (только текущей записи); Ctrl+Z отменяет."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.window import MainWindow
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    table = tmp_path / "table.xlsx"
+    workbook = load_workbook(run.settings.TABLE_FILE)
+    workbook.active.append([1, "rec2", "rec2", 2, N_FRAMES + 1, 5000, CX, CY])
+    workbook.save(table)
+    for name in ("rec1", "rec2"):
+        shutil.copytree(Path(run.settings.IMAGES_DIR) / "rec1", tmp_path / "images" / name)
+    settings = _module_file(tmp_path / "settings.py", {**vars(run.settings), "TABLE_FILE": str(table),
+                                                       "IMAGES_DIR": str(tmp_path / "images"),
+                                                       "OUTPUT_DIR": str(tmp_path / "out"),
+                                                       "SURFACE_ROW": HEIGHT + 1})
+    thresholds = _module_file(tmp_path / "thresholds.py", vars(THRESHOLDS))
+    window = MainWindow(settings, thresholds, workers=0)
+    page = window.records
+    messages = []
+    page.message.connect(messages.append)
+    field = page.params.fields[("settings", "SURFACE_ROW")]
+    assert field.pick_button is not None
+
+    field.pick_button.click()  # SURFACE_ROW — число: значение пойдёт в настройки
+    assert page.pick_mode
+    page.view.clicked.emit(100.0, 123.6)
+    assert not page.pick_mode and page.view.surface_line.isVisible()
+    assert page.params.files["settings"].value("SURFACE_ROW") == 124 and page.params.has_changes
+    assert any("SURFACE_ROW = 124" in text for text in messages)
+    assert page.undo() and page.params.files["settings"].value("SURFACE_ROW") == HEIGHT + 1
+
+    page.params.set_text("settings", "SURFACE_ROW", "surface_row")  # значение — из колонки таблицы
+    page.apply_parameters()
+    assert "surface_row" not in page.table.headers  # колонки ещё нет — её добавит щелчок
+    field.pick_button.click()
+    page.view.clicked.emit(100.0, 200.4)
+    assert "surface_row" in page.table.headers and page.table.value(0, "surface_row") == 200
+    assert "surface_row" in page.table.new_columns
+    assert any("surface_row = 200" in text for text in messages)
+    page.recompute()
+    assert page.can_compute and not page.compute_error
+    assert page.undo() and "surface_row" not in page.table.headers  # колонка и значение — один шаг
+
+    field.pick_button.click()  # значение — только текущей записи, не всем выделенным
+    page.view.clicked.emit(100.0, 200.4)
+    page.selected = [0, 1]
+    field.pick_button.click()
+    page.view.clicked.emit(100.0, 220.4)
+    assert page.table.value(0, "surface_row") == 220 and page.table.value(1, "surface_row") is None
+    page.discard()  # несохранённые правки — иначе закрытие спросит, сохранять ли
+    page.params.discard()
     window.close()
 
 

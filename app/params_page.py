@@ -10,8 +10,9 @@
 «Сохранить настройки» записывает в файлы только изменённые значения (комментарии и остальное остаются);
 «Вернуть как в файлах» — забыть правки. Пока правки не сохранены, скрипты main/ работают со значениями
 из файлов. Ctrl+Z / Ctrl+Y приложения отменяют и повторяют правки значений по шагам: правки одного
-значения подряд (набор, ползунок) — один шаг; шаги идут в общую историю (app/undo.py). Логика без окон —
-lib/common/config_edit.py.
+значения подряд (набор, ползунок) — один шаг; шаги идут в общую историю (app/undo.py). У SURFACE_ROW —
+кнопка «по кадру» (pick_requested): RecordsPage ждёт щелчок по кадру и пишет значение в settings.py или
+в колонку таблицы, имя которой записано в SURFACE_ROW. Логика без окон — lib/common/config_edit.py.
 """
 
 import html
@@ -23,7 +24,7 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSlider,
-                               QVBoxLayout, QWidget)
+                               QToolButton, QVBoxLayout, QWidget)
 
 from lib.common.config_edit import Setting, SettingsFile, literal, value_text
 
@@ -66,10 +67,13 @@ def _numbers(value: Any) -> list[float] | None:
 
 class ParamField(QWidget):
     """Одно значение файла настроек: подпись, поле ввода, ползунки для чисел.
-    kind — "settings" или "thresholds"; setting — значение из файла (config_edit.Setting)."""
+    kind — "settings" или "thresholds"; setting — значение из файла (config_edit.Setting).
+    У SURFACE_ROW рядом с полем — кнопка «по кадру»: значение задаётся щелчком по кадру
+    (pick — сигнал с именем значения)."""
 
     edited = Signal(str, str, str)  # kind, имя, новый текст значения (как в файле)
     finished = Signal()  # поле доделали: ушли из него или отпустили ползунок (серия правок закончена)
+    pick = Signal(str)  # нажали «по кадру» (имя значения)
 
     def __init__(self, kind: str, setting: Setting) -> None:
         super().__init__()
@@ -87,7 +91,19 @@ class ParamField(QWidget):
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(2)
         layout.addWidget(label)
-        layout.addWidget(self.edit)
+        edit_row = QHBoxLayout()
+        edit_row.addWidget(self.edit, 1)
+        self.pick_button: QToolButton | None = None
+        if kind == "settings" and setting.name == "SURFACE_ROW":  # значение можно задать щелчком по кадру
+            self.pick_button = QToolButton()
+            self.pick_button.setText("по кадру")
+            self.pick_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            self.pick_button.setToolTip("Щёлкнуть по кадру: строка y (с 1) станет SURFACE_ROW — в settings.py "
+                                        "или в колонку таблицы, имя которой записано в SURFACE_ROW")
+            self.pick_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.pick_button.clicked.connect(lambda checked=False: self.pick.emit(self.setting.name))
+            edit_row.addWidget(self.pick_button)
+        layout.addLayout(edit_row)
         self.sliders: list[QSlider] = []
         self.ranges: list[tuple[float, float]] = []
         self.integers: list[bool] = []
@@ -181,6 +197,8 @@ class ParamsPanel(QWidget):
     (для расчёта кадров); save — записать правки в файлы; undo / redo — отменить / повторить правку
     значения (Ctrl+Z / Ctrl+Y приложения; правки одного значения подряд — один шаг). Если настройки
     не из файлов (например, в тестах), панель только сообщает об этом, а working возвращает их как есть.
+    У SURFACE_ROW — кнопка «по кадру» (pick_requested): RecordsPage ждёт щелчок по кадру и пишет значение
+    в settings.py или в колонку таблицы, имя которой записано в SURFACE_ROW.
     """
 
     edited = Signal()  # значения с правками изменились — пересчитать кадр
@@ -188,6 +206,7 @@ class ParamsPanel(QWidget):
     message = Signal(str)  # сообщение для строки состояния
     step_made = Signal(str)  # новая правка для общей истории отмены (имя значения)
     history_reset = Signal()  # история отмены забыта (сохранение, отказ от правок, другие файлы)
+    pick_requested = Signal(str)  # нажали «по кадру» у значения (SURFACE_ROW): RecordsPage ждёт щелчок по кадру
 
     def __init__(self) -> None:
         super().__init__()
@@ -293,6 +312,7 @@ class ParamsPanel(QWidget):
                 field = ParamField(kind, setting)
                 field.edited.connect(self._edited)
                 field.finished.connect(self._break_merge)
+                field.pick.connect(self.pick_requested.emit)
                 field.show_text(f.text(setting.name), f.changed(setting.name))
                 self.form.addWidget(field)
                 self.fields[(kind, setting.name)] = field

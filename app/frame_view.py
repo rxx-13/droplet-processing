@@ -218,7 +218,7 @@ def _levels(picture: np.ndarray) -> tuple[float, float]:
 
 
 class FrameView(pg.GraphicsLayoutWidget):
-    """Кадр с наложениями (виды 1–5), крестиком «центра затравки» и разметкой размера бэга.
+    """Кадр с наложениями (виды 1–5), крестиком «центра затравки», разметкой размера бэга и линией строки воды.
 
     clicked(x, y) — щелчок левой кнопкой по кадру, координаты в пикселях с 1 (дробные).
     """
@@ -253,6 +253,11 @@ class FrameView(pg.GraphicsLayoutWidget):
         self.bag_guide.setZValue(20)
         self.bag_guide.setVisible(False)
         self.box.addItem(self.bag_guide, ignoreBounds=True)  # направляющая не влияет на «весь кадр»
+        self.surface_line = pg.InfiniteLine(pen=pg.mkPen("#00a0ff", width=1, style=Qt.PenStyle.DashLine))
+        self.surface_line.setAngle(0)  # горизонтальная линия строки воды
+        self.surface_line.setZValue(21)
+        self.surface_line.setVisible(False)
+        self.box.addItem(self.surface_line, ignoreBounds=True)
         self.colorbar: pg.ColorBarItem | None = None
         self.colorbar_shown = False
         self.frame_size: tuple[int, int] | None = None  # (высота, ширина) показанного кадра
@@ -391,6 +396,7 @@ class FrameView(pg.GraphicsLayoutWidget):
         self.image.setVisible(False)
         self.center.clear()
         self.set_bag([])
+        self.set_surface(None)
 
     def set_center(self, x: float | None, y: float | None) -> None:
         """Крестик «центра затравки» в точке (x, y), px с 1; None — убрать."""
@@ -413,6 +419,12 @@ class FrameView(pg.GraphicsLayoutWidget):
             self.bag_guide.setAngle(90 if direction == "vertical" else 0)
             self.bag_guide.setPos(QPointF(value, 0) if direction == "vertical" else QPointF(0, value))
             self.bag_guide.setVisible(True)
+
+    def set_surface(self, row: float | None) -> None:
+        """Строка воды: горизонтальная пунктирная линия на y = row (px с 1); None — убрать."""
+        self.surface_line.setVisible(row is not None)
+        if row is not None:
+            self.surface_line.setPos(QPointF(0, row))
 
     def fit(self) -> None:
         """Показать кадр целиком."""
