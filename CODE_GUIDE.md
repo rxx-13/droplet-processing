@@ -474,6 +474,11 @@ run.py → MainWindow (window.py)                  две части: «Обра
   `_open`, `_switch`, `_reload` (открыть запись, сменить запись, перечитать настройки).
 - [tools/make_docx.py](tools/make_docx.py): Word-версии документации в папку `docx/` (pandoc);
   `fix_links` переписывает ссылки для документа в подпапке, `convert` — один документ.
+- [tools/table_xlsx.py](tools/table_xlsx.py): просмотр и правка таблиц записей xlsx без приложения:
+  `show` (заголовки с описаниями и строки; `--columns`, `--record`, `--limit`), `set` (одна ячейка
+  у записи rec_name), `add-column`. Запись — через `EditableTable.save`: только изменённые ячейки,
+  копия файла в `table_backups`. Нужен, чтобы Claude Code мог смотреть и править таблицы, не получая
+  общего доступа к Python (в настройках разрешён только вызов этого файла).
 - [app/](app/) — приложение (PySide6 + pyqtgraph), дерево вызовов — в разделе 2:
   - [run.py](app/run.py): `main` — запуск окна;
   - [window.py](app/window.py): `MainWindow` — две части окна; выбор эксперимента (`experiment_names`, `experiment_name`,
