@@ -25,6 +25,10 @@ from typing import Any  # noqa: E402
 from lib.common.records import project_path  # noqa: E402
 from lib.common.table_edit import EditableTable, TableSaveError, format_value  # noqa: E402
 
+for _stream in (sys.stdout, sys.stderr):  # русский текст в Git Bash и при перенаправлении вывода
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 
 def _table(file: str) -> tuple[Path, EditableTable]:
     """Открыть таблицу xlsx (путь полный или от папки проекта) и вернуть её путь и EditableTable."""
@@ -73,10 +77,11 @@ def show(table: EditableTable, columns: str | None = None, record: str | None = 
         for header in headers:
             print(f"{header} = {_clean(table.value(i, header))}")
         return
-    print("\t".join(["row", "rec_name", *headers]))
+    other = [header for header in headers if header != "rec_name"]  # rec_name уже есть отдельной колонкой
+    print("\t".join(["row", "rec_name", *other]))
     rows = table.rows if limit <= 0 else table.rows[:limit]
     for i, row in enumerate(rows):
-        values = [_clean(table.value(i, header)) for header in headers]
+        values = [_clean(table.value(i, header)) for header in other]
         print("\t".join([str(row.excel_row), table.name(i), *values]))
 
 
