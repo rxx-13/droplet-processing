@@ -479,6 +479,10 @@ run.py → MainWindow (window.py)                  две части: «Обра
   у записи rec_name), `add-column`. Запись — через `EditableTable.save`: только изменённые ячейки,
   копия файла в `table_backups`. Нужен, чтобы Claude Code мог смотреть и править таблицы, не получая
   общего доступа к Python (в настройках разрешён только вызов этого файла).
+- [tools/recalc.py](tools/recalc.py): пересчёт стадий st1 → st2 → st4 для списка экспериментов
+  в параллельных процессах через `lib/common/jobs.py` (тот же механизм, что у вкладки «Запуск»):
+  `build_jobs` (задания на готовые записи), `main`; ключи `--stages`, `--workers`. Старые результаты
+  перезаписываются; ошибка в записи не останавливает остальные.
 - [app/](app/) — приложение (PySide6 + pyqtgraph), дерево вызовов — в разделе 2:
   - [run.py](app/run.py): `main` — запуск окна;
   - [window.py](app/window.py): `MainWindow` — две части окна; выбор эксперимента (`experiment_names`, `experiment_name`,
