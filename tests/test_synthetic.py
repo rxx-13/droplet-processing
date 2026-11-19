@@ -573,6 +573,48 @@ def test_app_settings_panel_recomputes_frame_and_saves_files(run, tmp_path):
     window.close()
 
 
+def test_settings_panel_orders_sections_and_explains_fields(tmp_path):
+    """Разделы — по порядку общие → st1 → st2 → st4 → графики, у полей — практические пояснения."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication
+
+    from app.params_page import ParamsPanel
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    settings_path = tmp_path / "settings.py"
+    settings_path.write_bytes((
+        "# ---------- файлы\n"
+        'IMAGES_DIR = "C:/images"  # кадры\n'
+        "# ---------- st4: области поиска\n"
+        "AREA_X = (0, 100)  # границы\n").encode("utf-8"))
+    thresholds_path = tmp_path / "thresholds.py"
+    thresholds_path.write_bytes((
+        "# ---------- st1: удаление рима и крупных брызг\n"
+        "RIM_DILATE_RADIUS = 5  # px\n"
+        "# ---------- st1: поиск капель\n"
+        "CANNY_THRESHOLD = 0.1  # px\n"
+        "# ---------- st2: PTV-трекинг\n"
+        "PTV_SEARCH_RADIUS = 20  # px\n"
+        "# ---------- графики\n"
+        "PIV_PLOT_SPEED_MAX = 7  # px\n").encode("utf-8"))
+    modules = []
+    for path in (settings_path, thresholds_path):
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        modules.append(module)
+    panel = ParamsPanel()
+    panel.load(*modules)
+    assert [header.text() for header, _ in panel.headers] == [
+        "файлы", "st1: удаление рима и крупных брызг", "st1: поиск капель", "st2: PTV-трекинг",
+        "st4: области поиска", "графики"]
+    field = panel.fields[("thresholds", "RIM_DILATE_RADIUS")]
+    assert field.hint is not None and "Больше" in field.hint.text()
+    assert panel.fields[("settings", "IMAGES_DIR")].hint is not None
+    assert field.matches("фиолетовая кайма")  # пояснение участвует в поиске
+    panel.close()
+
+
 def test_app_runs_stages_like_main_scripts_and_shows_results(run, tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
     from PySide6.QtWidgets import QApplication

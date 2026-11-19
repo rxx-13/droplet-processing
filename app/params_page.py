@@ -1,8 +1,11 @@
 """Панель «Настройки»: все значения settings.py и thresholds.py эксперимента — полями ввода и ползунками.
 
 Панель стоит на вкладке «Записи» справа от кадра (вторая вкладка рядом с «Таблицей»), чтобы пороги
-подбирались «на глаз»: правка значения через короткую паузу пересчитывает кадр. Подпись поля — имя
-и комментарий из файла (пояснение над строкой — во всплывающей подсказке). У чисел и кортежей из чисел
+подбирались «на глаз»: правка значения через короткую паузу пересчитывает кадр. Поля идут по порядку:
+общие настройки (файлы, записи, съёмка), затем st1 → st2 → st4 → графики — независимо от того, в каком
+файле значение (SECTION_ORDER). Подпись поля — имя и комментарий из файла (пояснение над строкой — во
+всплывающей подсказке), под полем — практическое пояснение HINTS: что значение делает и в какую сторону
+его менять, если на кадре что-то не так (поиск учитывает и его). У чисел и кортежей из чисел
 (например, RIM_GRAY_RANGE) — ползунок на каждое число: от 0 (у отрицательных — от удвоенного значения)
 до удвоенного значения; набранное в поле число становится новой серединой ползунка. Строки (пути) вводятся
 без кавычек; кортежи и списки — как в файле, например (-100, 0) или [10, 20].
@@ -22,7 +25,6 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSlider,
                                QToolButton, QVBoxLayout, QWidget)
 
@@ -30,9 +32,108 @@ from lib.common.config_edit import Setting, SettingsFile, literal, value_text
 
 FLOAT_STEPS = 1000  # число шагов ползунка дробного числа
 MAX_SLIDERS = 4  # ползунки — у кортежей не длиннее этого
-KINDS = {"settings": "settings.py — файлы, съёмка, области st4", "thresholds": "thresholds.py — пороги алгоритмов"}
+FILE_TITLES = {"settings": "settings.py", "thresholds": "thresholds.py"}  # заголовок, если разделов нет
 CHANGED_STYLE = "QLineEdit { background: #fff1b8; }"  # несохранённая правка
 INVALID_STYLE = "QLineEdit { background: #ffc9c9; }"  # ошибка ввода
+
+# Порядок разделов в панели: общие настройки, затем st1 → st2 → st4 → графики — независимо от того,
+# в каком файле значение. Неизвестные разделы — в конце, в порядке файлов.
+SECTION_ORDER = (
+    "файлы",
+    "какие записи обрабатывать",
+    "съёмка",
+    "st1: удаление рима",
+    "st1: поиск капель",
+    "st1: piv",
+    "st2:",
+    "st4:",
+    "графики",
+    "необязательно",
+)
+
+# Практические пояснения к значениям: что меняется на кадре и в какую сторону крутить, если на картинке
+# что-то не так. Показываются под полем (и участвуют в поиске); сами значения эти тексты не меняют.
+HINTS = {
+    "IMAGES_DIR": "Где лежат кадры: в этой папке — подпапка каждой записи (images_path_side из таблицы). "
+                  "Ошибка здесь — «нет папки с кадрами».",
+    "TABLE_FILE": "Таблица записей xlsx: кадры, диапазон, rim, c_x/c_y. Её правят на вкладке «Записи».",
+    "OUTPUT_DIR": "Куда писать результаты (PIV, PTV, st4). На расчёт не влияет; старые результаты этой "
+                  "папки перезаписываются.",
+    "CONDITIONS": "Обрабатывать только записи с этими номерами cond_num. Пусто — все записи.",
+    "RECORDS": "Обрабатывать только эти записи rec_name. Пусто — все записи.",
+    "SCALE_MM_PER_PX": "Масштаб съёмки, мм на пиксель. От него зависят все размеры в мм и скорости в м/с: "
+                       "ошибка в 2 раза — во столько же раз неверны r и v.",
+    "FPS": "Частота съёмки. От неё зависят скорости в м/с (px/кадр × FPS); на размеры в мм и px не влияет.",
+    "SURFACE_ROW": "Строка кадра (с 1), ниже которой всё считается водой и закрашивается. Больше (ниже) — "
+                   "вода закрашивается ниже, капли у поверхности остаются; меньше (выше) — срезаются "
+                   "настоящие капли. Ставится кнопкой «по кадру».",
+    "BACKGROUND_FRAME": "Номер файла записи без капель — фон. Если взят кадр с каплями, они попадут в маску "
+                        "рима и пропадут; лучше кадр до появления капель.",
+    "ERASE_REGIONS": "Прямоугольники, которые закрашиваются вручную (блики, посторонние предметы). "
+                     "Влияет только на то, что стирается как рим.",
+    "AREA_X": "Области st4: левая и правая границы, px. Влияет только на статистику st4, не на поиск капель.",
+    "AREA_HEIGHTS": "Области st4: высоты, px. Больше высот — больше строк в статистике st4.",
+    "AREA_LOW_EDGES": "Области st4: положения нижнего края, px. Вместе с AREA_HEIGHTS задают сетку областей.",
+    "MATLAB_RESULTS_DIR": "Результаты MATLAB для сравнения (tests/compare_with_matlab.py и «Обработка "
+                          "результатов»). На расчёт Python не влияет.",
+    "RIM_GRAY_RANGE": "Какие перепады яркости «кадр минус фон» считать тёмными; диапазон растягивается "
+                      "в 0…1. Нижнее число ближе к 0 — «тёмными» становятся более светлые пятна: "
+                      "закрашивается больше (рим, брызги, блики, иногда капли у бэга); дальше от 0 — "
+                      "только более тёмное.",
+    "RIM_BINARIZE_THRESHOLD": "Порог «тёмного» после растяжения. Меньше — закрашивается больше "
+                              "(сиреневое пятно растёт); больше — закрашивается меньше, остатки рима "
+                              "могут попасть в капли.",
+    "RIM_CLOSE_RADIUS": "Радиус склейки соседних тёмных пятен рима, px. Больше — рим и брызги сливаются "
+                        "в один объект и закрашиваются целиком; меньше — между ними остаются щели, "
+                        "куски рима станут «каплями».",
+    "RIM_DILATE_RADIUS": "На сколько расширить закрашенное вокруг рима, px. Больше — стирается больше "
+                         "вокруг бэга, в том числе настоящие капли рядом; меньше — остаётся светлая "
+                         "фиолетовая кайма, она даст ложные капли.",
+    "DROPLET_GRAY_RANGE": "Растяжение яркости перед поиском границ. Уже диапазон — контрастнее: находятся "
+                          "и слабые капли, но больше шума; шире — только контрастные капли.",
+    "CANNY_THRESHOLD": "Порог границ (доля от максимума градиента в кадре). Меньше — больше контуров "
+                       "и «капель», в том числе шумовых; больше — только яркие границы, слабые капли пропадают.",
+    "DROPLET_OPEN_RADIUS": "Отделяет сплошные капли от тонких линий, px. Больше — в капли идут только "
+                           "сплошные пятна; меньше — в капли попадают обрывки контуров.",
+    "DROPLET_MIN_PIXELS": "Контуры меньше этого числа пикселей — шум. Больше — мелкие капли пропадают; "
+                          "меньше — появляется мелкий мусор.",
+    "DROPLET_CLOSE_RADIUS": "Замыкает разрывы контуров, px. Больше — разорванная капля станет сплошной, "
+                            "но соседние капли могут слипнуться; меньше — разомкнутый контур пропадёт.",
+    "PIV_WINDOW": "Размер окна корреляции, px. Больше — меньше ложных векторов, но сглаживает мелкие "
+                  "течения; меньше — детальнее и шумнее. Должно быть заметно больше 2× PIV_MAX_DISPLACEMENT.",
+    "PIV_STEP": "Шаг сетки PIV, px. Меньше — больше векторов и дольше счёт; больше — быстрее и грубее.",
+    "PIV_MAX_DISPLACEMENT": "Наибольшее смещение между кадрами, которое ищет PIV, px. Меньше реального — "
+                            "быстрые капли дают неверные векторы; больше — медленнее и больше ложных пиков.",
+    "PIV_MIN_PEAK_RATIO": "Во сколько раз лучший пик корреляции должен быть выше второго. Больше — строже "
+                          "(векторов меньше, но надёжнее); меньше — больше векторов и шума.",
+    "PIV_FILTER_MIN_PEAK_RATIO": "То же при фильтрации готовых векторов: больше — сильнее чистка, меньше — "
+                                 "остаётся больше векторов.",
+    "PIV_FILTER_MIN_DISPLACEMENT": "Смещение меньше этого, px/кадр, считается ошибкой и заменяется медианой. "
+                                   "Больше — сильнее давятся почти неподвижные области; меньше — они остаются.",
+    "PIV_FILTER_MEDIAN_SIZE": "Окно медианного сглаживания векторов, узлов. Больше — сильнее убирает "
+                              "одиночные выбросы, но сглаживает течение; меньше — детальнее и шумнее.",
+    "PTV_SEARCH_RADIUS": "В каком радиусе от предсказания искать каплю, px. Больше — не потеряет быструю "
+                         "каплю, но может связать чужую; меньше — наоборот.",
+    "PTV_MAX_RADIUS_RATIO": "Во сколько раз может отличаться радиус капли в траектории. Больше — терпимее "
+                            "(длиннее траектории, но риск связать разные капли); меньше — строже "
+                            "(траектории рвутся).",
+    "PTV_MAX_FRAME_GAP": "Какой пропуск кадров допускается внутри траектории. Больше — сшивает через "
+                         "пропуски (длиннее траектории, больше ошибок); меньше — только подряд идущие кадры.",
+    "PTV_MAX_DEVIATION": "Допустимое отклонение от полинома (в долях шага траектории). Больше — принимается "
+                         "больше точек (длиннее траектории, но больше ошибок); меньше — только гладкое движение.",
+    "PTV_MIN_STRAIGHTNESS": "Насколько три последние точки должны быть на прямой: 1 — точно на прямой. "
+                            "Меньше — разрешает изгибы (и ошибки); больше — только прямые траектории.",
+    "PTV_PIV_WEIGHT": "Вес PIV в предсказании положения. 0 — только по самой траектории; больше — сильнее "
+                      "доверяет полю скоростей (помогает в плотном потоке, но при плохом PIV уводит не туда).",
+    "PTV_POLY_POINTS": "По скольким последним точкам строится полином. Больше — устойчивее к шуму, но хуже "
+                       "повороты; меньше — отзывчивее и шумнее.",
+    "TRACKS_PLOT_MIN_POINTS": "Только картинка tracks.png: траектории длиннее этого — синие, короче — "
+                              "оранжевые. На расчёт не влияет.",
+    "AREA_PLOT_ARROW_SCALE": "Только картинки st4: длина стрелок скорости. На расчёт не влияет.",
+    "AREA_PLOT_Y_LIMITS_MM": "Только картинки st4: пределы по y, мм. На расчёт не влияет.",
+    "PIV_PLOT_ARROW_SCALE": "Только вид 4–5 в окне: длина стрелок PIV. На расчёт не влияет.",
+    "PIV_PLOT_SPEED_MAX": "Только вид 5: верх цветовой шкалы скорости, м/с. На расчёт не влияет.",
+}
 
 
 def slider_range(value: float) -> tuple[float, float]:
@@ -53,6 +154,12 @@ def number_text(value: float, step: float) -> str:
     return "0.0" if text in ("-0.0", "") else text
 
 
+def section_rank(section: str) -> int:
+    """Место раздела в панели по SECTION_ORDER (общие, st1, st2, st4, графики); неизвестные — в конце."""
+    text = section.strip().lower()
+    return next((i for i, prefix in enumerate(SECTION_ORDER) if text.startswith(prefix)), len(SECTION_ORDER))
+
+
 def _numbers(value: Any) -> list[float] | None:
     """Числа, которым нужны ползунки: само число или кортеж из 1–MAX_SLIDERS чисел; иначе None."""
     def is_number(v: Any) -> bool:
@@ -66,8 +173,10 @@ def _numbers(value: Any) -> list[float] | None:
 
 
 class ParamField(QWidget):
-    """Одно значение файла настроек: подпись, поле ввода, ползунки для чисел.
-    kind — "settings" или "thresholds"; setting — значение из файла (config_edit.Setting).
+    """Одно значение файла настроек: подпись, поле ввода, ползунки для чисел, практическое пояснение
+    (HINTS: что меняется на кадре и в какую сторону крутить).
+    kind — "settings" или "thresholds"; setting — значение из файла (config_edit.Setting);
+    hint — подпись с пояснением (None — для значения пояснения нет).
     У SURFACE_ROW рядом с полем — кнопка «по кадру»: значение задаётся щелчком по кадру
     (pick — сигнал с именем значения)."""
 
@@ -122,11 +231,18 @@ class ParamField(QWidget):
             self.sliders.append(slider)
             self.ranges.append((0.0, 1.0))
             self.integers.append(isinstance(number, int))
+        self.hint: QLabel | None = None
+        text = HINTS.get(setting.name)
+        if text:
+            self.hint = QLabel(text)
+            self.hint.setWordWrap(True)
+            self.hint.setStyleSheet("color: #555555;")
+            layout.addWidget(self.hint)
 
     def matches(self, words: str) -> bool:
         """Подходит ли поле под поиск (имя, комментарий, пояснение, раздел)."""
         s = self.setting
-        return words.lower() in f"{s.name} {s.comment} {s.note} {s.section}".lower()
+        return words.lower() in f"{s.name} {s.comment} {s.note} {s.section} {HINTS.get(s.name, '')}".lower()
 
     def show_text(self, text: str, changed: bool, keep_text: bool = False) -> None:
         """Показать значение (текст литерала из файла или правки), отметку правки, положение ползунков.
@@ -220,7 +336,7 @@ class ParamsPanel(QWidget):
         self.where = QLabel()
         self.where.setWordWrap(True)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Найти: имя или слово из комментария")
+        self.search.setPlaceholderText("Найти: имя, слово из комментария или пояснения")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         self.save_button = QPushButton("Сохранить настройки")
@@ -280,7 +396,7 @@ class ParamsPanel(QWidget):
         self._build()
 
     def _build(self) -> None:
-        """Поля всех значений файлов, по разделам."""
+        """Поля всех значений файлов по разделам: общие настройки, st1, st2, st4, графики (SECTION_ORDER)."""
         while self.form.count():
             item = self.form.takeAt(0)
             if item.widget() is not None:
@@ -290,33 +406,30 @@ class ParamsPanel(QWidget):
             self.where.setText("Настройки эксперимента не из файлов — здесь их не поправить.")
         else:
             self.where.setText("Файлы: " + ", ".join(str(f.path) for f in self.files.values()))
-        bold = QFont()
-        bold.setBold(True)
+        groups: list[tuple[str, str, list[Setting]]] = []  # (вид файла, раздел, значения)
         for kind, f in self.files.items():
-            title = QLabel(KINDS[kind])
-            title.setFont(bold)
-            title.setWordWrap(True)
-            title.setStyleSheet("background: #dde6f3; padding: 3px;")
-            self.form.addWidget(title)
-            file_fields: list[ParamField] = []
-            self.headers.append((title, file_fields))
-            section, section_fields = None, []
+            section = None
             for setting in f.settings.values():
                 if setting.section != section:
-                    section, section_fields = setting.section, []
-                    header = QLabel(section)
-                    header.setWordWrap(True)
-                    header.setStyleSheet("color: #1f5fd0; padding-top: 6px;")
-                    self.form.addWidget(header)
-                    self.headers.append((header, section_fields))
+                    section = setting.section
+                    groups.append((kind, section, []))
+                groups[-1][2].append(setting)
+        groups.sort(key=lambda group: section_rank(group[1]))  # устойчиво: равные — как в файлах
+        for kind, section, settings in groups:
+            header = QLabel(section or FILE_TITLES[kind])
+            header.setWordWrap(True)
+            header.setStyleSheet("color: #1f5fd0; padding-top: 6px;")
+            self.form.addWidget(header)
+            section_fields: list[ParamField] = []
+            self.headers.append((header, section_fields))
+            for setting in settings:
                 field = ParamField(kind, setting)
                 field.edited.connect(self._edited)
                 field.finished.connect(self._break_merge)
                 field.pick.connect(self.pick_requested.emit)
-                field.show_text(f.text(setting.name), f.changed(setting.name))
+                field.show_text(self.files[kind].text(setting.name), self.files[kind].changed(setting.name))
                 self.form.addWidget(field)
                 self.fields[(kind, setting.name)] = field
-                file_fields.append(field)
                 section_fields.append(field)
         self._filter(self.search.text())
         self._update_counts()

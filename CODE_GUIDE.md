@@ -534,9 +534,11 @@ run.py → MainWindow (window.py)                  две части: «Обра
     Ctrl+Z / Ctrl+Y на всё приложение (`_undo`, `_redo`);
   - [params_page.py](app/params_page.py): `ParamsPanel` — панель «Настройки» (`load`, `working`, `set_text`,
     `save`, `discard`, `undo`, `redo`, история — `_record`, `_apply`, `_reset_history`, поиск — `_filter`;
-    `pick_requested` — нажали «по кадру» у SURFACE_ROW);
+    порядок разделов — `section_rank` и `SECTION_ORDER`: общие (файлы, записи, съёмка) → st1 → st2 → st4 →
+    графики; `pick_requested` — нажали «по кадру» у SURFACE_ROW);
     `ParamField` — поле значения с ползунками (`slider_range`, `number_text`, `_numbers`; `pick` — кнопка
-    «по кадру» у SURFACE_ROW);
+    «по кадру» у SURFACE_ROW); практические пояснения к значениям — `HINTS`, подпись `hint` (что меняется
+    на кадре и в какую сторону крутить; поиск их учитывает);
   - [jobs_page.py](app/jobs_page.py): `CheckPainter` — флажки в списках как выделение в проводнике (щелчок по
     строке, протягивание мышью, Shift — диапазон; и в списке экспериментов «Обработки результатов»);
     `JobsPage` — вкладка «Запуск» (`refresh`, `set_checked`, `start`, `stop`,
