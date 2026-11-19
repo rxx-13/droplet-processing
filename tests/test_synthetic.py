@@ -631,6 +631,19 @@ def test_scale_dialog_measures_segment_on_a_photo(tmp_path):
     assert mm_per_px(100, 10, "мм") == pytest.approx(0.1)
     dialog = ScaleDialog(photo)
     dialog.pick_point(10, 10)
+    dialog.pick_point(110, 30)  # ближе горизонтальная прямая y = 10
+    assert dialog.points == [(10, 10), (110, 10)] and dialog.pixel_length == pytest.approx(100)
+    dialog.reset()
+    dialog.pick_point(10, 10)
+    dialog.pick_point(30, 100)  # ближе вертикальная прямая x = 10
+    assert dialog.points == [(10, 10), (10, 100)] and dialog.pixel_length == pytest.approx(90)
+    dialog.reset()
+    dialog.pick_point(10, 10)
+    dialog.pick_point(110, 30, snap=False)  # Shift — свободно, вдоль наклонной линейки
+    assert dialog.points == [(10, 10), (110, 30)]
+    assert dialog.pixel_length == pytest.approx(float(np.hypot(100, 20)))
+    dialog.reset()
+    dialog.pick_point(10, 10)
     dialog.pick_point(110, 10)
     assert dialog.pixel_length == pytest.approx(100)
     dialog.length_edit.setText("1")  # 1 см

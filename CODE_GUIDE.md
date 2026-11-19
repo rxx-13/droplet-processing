@@ -508,9 +508,10 @@ run.py → MainWindow (window.py)                  две части: «Обра
     и порогов, флажок «Сделать текущим» (`_path`, `choose_images`, `choose_table`, `choose_output`,
     `create` — проверка полей и создание);
   - [scale_dialog.py](app/scale_dialog.py): `mm_per_px` — масштаб по отрезку, мм на пиксель;
-    `ScaleDialog` — окно «Масштаб по фото» (фото с растянутой яркостью, две точки щелчками, длина
-    в см/мм, `pixel_length`, `pick_point`, `reset`, `accept_scale`); открывается кнопкой «по фото…»
-    у SCALE_MM_PER_PX (`ParamsPanel.measure_scale`) — в поле как несохранённая правка;
+    `ScaleDialog` — окно «Масштаб по фото» (фото с растянутой яркостью, две точки щелчками; после первой —
+    вертикальная и горизонтальная прямые `vline`/`hline`, вторая точка встаёт на ближайшую из них, Shift —
+    свободно; длина в см/мм, `pixel_length`, `pick_point`, `reset`, `accept_scale`); открывается кнопкой
+    «по фото…» у SCALE_MM_PER_PX (`ParamsPanel.measure_scale`) — в поле как несохранённая правка;
   - [records_page.py](app/records_page.py): `RecordsPage` — вкладка «Записи»: список (`_fill_list`, `_update_row`),
     кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу; если настройка-колонка пуста — нет числа
     для `SURFACE_ROW`/`BACKGROUND_FRAME`, — расчёт отключается, причина в `compute_error`, вид 1 показывается;

@@ -1,10 +1,13 @@
 r"""Масштаб по фото: отметить на фотографии отрезок известной длины и получить SCALE_MM_PER_PX.
 
 Окно открывается кнопкой «по фото…» у значения SCALE_MM_PER_PX в панели «Настройки». Показывается
-фото (яркость растягивается, тёмные снимки видны); двумя щелчками отмечается отрезок вдоль линейки
-или известного размера; после второго щелчка курсор переходит в поле длины. Длина вводится в
-сантиметрах (по умолчанию) или миллиметрах, масштаб = длина в мм / длина отрезка в px. Полученное
-значение записывается в SCALE_MM_PER_PX как обычная несохранённая правка (Ctrl+S — в файл).
+фото (яркость растягивается, тёмные снимки видны). Первый щелчок — начало отрезка; после него через
+точку появляются вертикальная и горизонтальная вспомогательные прямые, и вторая точка по умолчанию
+ставится на ближайшую из них (отрезок получается строго горизонтальным или вертикальным; Shift —
+поставить свободно, например вдоль наклонной линейки). После второго щелчка курсор переходит в поле
+длины. Длина вводится в сантиметрах (по умолчанию) или миллиметрах, масштаб = длина в мм / длина
+отрезка в px. Полученное значение записывается в SCALE_MM_PER_PX как обычная несохранённая правка
+(Ctrl+S — в файл).
 
 pyqtgraph: показ фото, увеличение колесом, сдвиг мышью, щелчок — точка отрезка.
 """
@@ -16,8 +19,8 @@ import numpy as np
 import pyqtgraph as pg
 from PIL import Image
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
+                               QPushButton, QVBoxLayout, QWidget)
 
 IMAGE_FILTER = "Картинки (*.jpg *.jpeg *.png *.tif *.tiff *.bmp)"
 UNITS = {"см": 10.0, "мм": 1.0}  # сколько миллиметров в единице длины
@@ -63,10 +66,17 @@ class ScaleDialog(QDialog):
         self.line = pg.PlotCurveItem(pen=pg.mkPen("r", width=2))
         self.plot.addItem(self.marks)
         self.plot.addItem(self.line)
+        pen = pg.mkPen("#d09000", width=1, style=Qt.PenStyle.DashLine)  # вспомогательные прямые
+        self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pen)
+        self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pen)
+        for helper in (self.vline, self.hline):
+            self.plot.addItem(helper)
+            helper.setVisible(False)
         self.plot.setRange(xRange=(0, self.size[0]), yRange=(self.size[1], 0))
         self.plot.scene().sigMouseClicked.connect(self._clicked)
 
-        self.info = QLabel("Щёлкните две точки вдоль линейки или известного размера; колесо — увеличение, "
+        self.info = QLabel("Первый щелчок — начало отрезка; вторая точка встаёт на вертикальную или "
+                           "горизонтальную прямую через неё (Shift — свободно). Колесо — увеличение, "
                            "перетаскивание — сдвиг.")
         self.info.setWordWrap(True)
         self.length_edit = QLineEdit("1")
@@ -109,7 +119,7 @@ class ScaleDialog(QDialog):
         return float(np.hypot(x2 - x1, y2 - y1))
 
     def _clicked(self, event: Any) -> None:
-        """Щелчок по фото: точка отрезка (левая кнопка, в пределах фото)."""
+        """Щелчок по фото: точка отрезка (левая кнопка, в пределах фото); Shift — вторая точка свободно."""
         if event.button() != Qt.MouseButton.LeftButton or event.double():
             return
         if not self.box.sceneBoundingRect().contains(event.scenePos()):
@@ -117,12 +127,17 @@ class ScaleDialog(QDialog):
         point = self.box.mapSceneToView(event.scenePos())
         x, y = point.x(), point.y()
         if 0 <= x <= self.size[0] and 0 <= y <= self.size[1]:
-            self.pick_point(x, y)
+            shift = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+            self.pick_point(x, y, snap=not shift)
 
-    def pick_point(self, x: float, y: float) -> None:
-        """Добавить точку отрезка, px; после второй точки — курсор в поле длины; третья — новый отрезок."""
+    def pick_point(self, x: float, y: float, snap: bool = True) -> None:
+        """Добавить точку отрезка, px. Вторая точка при snap ставится на ближайшую вспомогательную
+        прямую через первую (x или y первой точки); после неё курсор — в поле длины; третья — новый отрезок."""
         if len(self.points) >= 2:
             self.points = []
+        if snap and len(self.points) == 1:
+            x1, y1 = self.points[0]
+            x, y = (x1, y) if abs(x - x1) <= abs(y - y1) else (x, y1)
         self.points.append((x, y))
         if len(self.points) == 2:
             self.length_edit.setFocus()
@@ -143,7 +158,14 @@ class ScaleDialog(QDialog):
         return length if length > 0 else 0.0
 
     def _update(self) -> None:
-        """Нарисовать точки и отрезок, показать посчитанный масштаб, включить или выключить «Создать»."""
+        """Нарисовать точки, отрезок и вспомогательные прямые, показать масштаб, включить или выключить
+        «Создать»."""
+        one = len(self.points) == 1  # после первой точки — прямые, на которые встанет вторая
+        if one:
+            self.vline.setPos(self.points[0][0])
+            self.hline.setPos(self.points[0][1])
+        self.vline.setVisible(one)
+        self.hline.setVisible(one)
         self.marks.setData([point[0] for point in self.points], [point[1] for point in self.points])
         px_length = self.pixel_length
         self.line.setData([p[0] for p in self.points], [p[1] for p in self.points])
