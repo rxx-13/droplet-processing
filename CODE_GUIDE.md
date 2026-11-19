@@ -124,6 +124,7 @@ run.py → MainWindow (window.py)                  две части: «Обра
 │                                                «Сделать текущим», вкладки ниже, Ctrl+S, F5) и «Обработка результатов»
 │     current_experiment, set_current_experiment (lib/common/config_edit.py) — experiments/current.py
 │     NewExperimentDialog (new_experiment.py)    «Создать эксперимент…»: копия настроек и порогов, таблица
+│     ScaleDialog (scale_dialog.py)              «Масштаб по фото»: две точки и длина → SCALE_MM_PER_PX
 ├─ RecordsPage (records_page.py)                 вкладка «Записи»
 │   ├─ UndoManager (undo.py)                     общая отмена приложения: шаги таблицы и настроек в одном
 │   │     порядке (record, undo, redo, forget); Ctrl+Z / Ctrl+Y — MainWindow, ApplicationShortcut
@@ -506,6 +507,10 @@ run.py → MainWindow (window.py)                  две части: «Обра
     папка кадров, таблица (выбор существующей или нового файла), папка результатов, образец настроек
     и порогов, флажок «Сделать текущим» (`_path`, `choose_images`, `choose_table`, `choose_output`,
     `create` — проверка полей и создание);
+  - [scale_dialog.py](app/scale_dialog.py): `mm_per_px` — масштаб по отрезку, мм на пиксель;
+    `ScaleDialog` — окно «Масштаб по фото» (фото с растянутой яркостью, две точки щелчками, длина
+    в см/мм, `pixel_length`, `pick_point`, `reset`, `accept_scale`); открывается кнопкой «по фото…»
+    у SCALE_MM_PER_PX (`ParamsPanel.measure_scale`) — в поле как несохранённая правка;
   - [records_page.py](app/records_page.py): `RecordsPage` — вкладка «Записи»: список (`_fill_list`, `_update_row`),
     кадры (`open_record`, `draw`, `go`, `step`, `set_view`, слайдшоу; если настройка-колонка пуста — нет числа
     для `SURFACE_ROW`/`BACKGROUND_FRAME`, — расчёт отключается, причина в `compute_error`, вид 1 показывается;
@@ -572,7 +577,7 @@ run.py → MainWindow (window.py)                  две части: «Обра
 | `OUTPUT_DIR` | settings | main/st1, main/st2, main/st4, `RecordsPage`, `sources_of` | куда писать результаты; приложение — отметки st1/st2/st4 и копии таблицы (`table_backups`) |
 | `CONDITIONS` | settings | `run_stage`, `Viewer` | какие условия обрабатывать |
 | `RECORDS` | settings | `run_stage`, `Viewer` | какие записи обрабатывать |
-| `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с; число или имя колонки таблицы (`record_setting`) |
+| `SCALE_MM_PER_PX` | settings | main/st4, `RecordPreview`, `RecordsPage`, `ResultsPage` | перевод px → мм, px/кадр → м/с; число или имя колонки таблицы (`record_setting`); число задаётся и по фото с линейкой (кнопка «по фото…», `ScaleDialog`) |
 | `FPS` | settings | main/st4, `RecordPreview`, `RecordsPage` | перевод px/кадр → м/с; число (одно на эксперимент) или имя колонки таблицы (`FPS = "fps"`) — тогда у каждой записи своё (`record_setting`) |
 | `SURFACE_ROW` | settings | `RimRemover` (main/st1, `compute_frame`) | откуда вниз закрашивается вода; число или имя колонки таблицы (`record_setting`); задаётся и щелчком по кадру (кнопка «по кадру» в «Настройках» — `_pick_setting`); если в строке записи числа нет — приложение показывает кадр и причину, расчёт видов 2–5 отключает |
 | `BACKGROUND_FRAME` | settings | main/st1, `compute_frame` | какой кадр — фон; число или имя колонки таблицы (`record_setting`) |

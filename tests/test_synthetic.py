@@ -585,6 +585,7 @@ def test_settings_panel_orders_sections_and_explains_fields(tmp_path):
     settings_path.write_bytes((
         "# ---------- файлы\n"
         'IMAGES_DIR = "C:/images"  # кадры\n'
+        "SCALE_MM_PER_PX = 0.05  # масштаб\n"
         "# ---------- st4: области поиска\n"
         "AREA_X = (0, 100)  # границы\n").encode("utf-8"))
     thresholds_path = tmp_path / "thresholds.py"
@@ -612,7 +613,30 @@ def test_settings_panel_orders_sections_and_explains_fields(tmp_path):
     assert field.hint is not None and "Больше" in field.hint.text()
     assert panel.fields[("settings", "IMAGES_DIR")].hint is not None
     assert field.matches("фиолетовая кайма")  # пояснение участвует в поиске
+    assert panel.fields[("settings", "SCALE_MM_PER_PX")].scale_button is not None  # «по фото…»
     panel.close()
+
+
+def test_scale_dialog_measures_segment_on_a_photo(tmp_path):
+    """Фото, две точки и длина в см/мм дают SCALE_MM_PER_PX (мм на пиксель)."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    from app.scale_dialog import ScaleDialog, mm_per_px
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    photo = tmp_path / "ruler.png"
+    Image.fromarray(np.full((80, 120), 200, dtype=np.uint8)).save(photo)
+    assert mm_per_px(100, 1, "см") == pytest.approx(0.1)  # 1 см = 10 мм на 100 px
+    assert mm_per_px(100, 10, "мм") == pytest.approx(0.1)
+    dialog = ScaleDialog(photo)
+    dialog.pick_point(10, 10)
+    dialog.pick_point(110, 10)
+    assert dialog.pixel_length == pytest.approx(100)
+    dialog.length_edit.setText("1")  # 1 см
+    assert dialog.accept_scale() and dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.scale == pytest.approx(0.1)
+    dialog.close()
 
 
 def test_app_runs_stages_like_main_scripts_and_shows_results(run, tmp_path):

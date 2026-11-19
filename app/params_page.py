@@ -25,10 +25,12 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSlider,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+                               QScrollArea, QSlider, QToolButton, QVBoxLayout, QWidget)
 
+from app.scale_dialog import IMAGE_FILTER, ScaleDialog
 from lib.common.config_edit import Setting, SettingsFile, literal, value_text
+from lib.common.records import project_path
 
 FLOAT_STEPS = 1000  # число шагов ползунка дробного числа
 MAX_SLIDERS = 4  # ползунки — у кортежей не длиннее этого
@@ -178,11 +180,13 @@ class ParamField(QWidget):
     kind — "settings" или "thresholds"; setting — значение из файла (config_edit.Setting);
     hint — подпись с пояснением (None — для значения пояснения нет).
     У SURFACE_ROW рядом с полем — кнопка «по кадру»: значение задаётся щелчком по кадру
-    (pick — сигнал с именем значения)."""
+    (pick — сигнал с именем значения). У числового SCALE_MM_PER_PX — кнопка «по фото…» (scale_requested):
+    масштаб считается по фотографии с линейкой в app/scale_dialog.py."""
 
     edited = Signal(str, str, str)  # kind, имя, новый текст значения (как в файле)
     finished = Signal()  # поле доделали: ушли из него или отпустили ползунок (серия правок закончена)
     pick = Signal(str)  # нажали «по кадру» (имя значения)
+    scale_requested = Signal()  # нажали «по фото…» у SCALE_MM_PER_PX
 
     def __init__(self, kind: str, setting: Setting) -> None:
         super().__init__()
@@ -203,6 +207,7 @@ class ParamField(QWidget):
         edit_row = QHBoxLayout()
         edit_row.addWidget(self.edit, 1)
         self.pick_button: QToolButton | None = None
+        self.scale_button: QToolButton | None = None
         if kind == "settings" and setting.name == "SURFACE_ROW":  # значение можно задать щелчком по кадру
             self.pick_button = QToolButton()
             self.pick_button.setText("по кадру")
@@ -212,6 +217,16 @@ class ParamField(QWidget):
             self.pick_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.pick_button.clicked.connect(lambda checked=False: self.pick.emit(self.setting.name))
             edit_row.addWidget(self.pick_button)
+        elif kind == "settings" and setting.name == "SCALE_MM_PER_PX" and not self.is_text:
+            self.scale_button = QToolButton()  # масштаб можно посчитать по фото с линейкой
+            self.scale_button.setText("по фото…")
+            self.scale_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            self.scale_button.setToolTip("Выбрать фото (например, с линейкой), отметить на нём отрезок "
+                                         "известной длины и ввести её — SCALE_MM_PER_PX посчитается. "
+                                         "В файл попадёт по кнопке «Сохранить настройки»")
+            self.scale_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.scale_button.clicked.connect(lambda checked=False: self.scale_requested.emit())
+            edit_row.addWidget(self.scale_button)
         layout.addLayout(edit_row)
         self.sliders: list[QSlider] = []
         self.ranges: list[tuple[float, float]] = []
@@ -314,7 +329,9 @@ class ParamsPanel(QWidget):
     значения (Ctrl+Z / Ctrl+Y приложения; правки одного значения подряд — один шаг). Если настройки
     не из файлов (например, в тестах), панель только сообщает об этом, а working возвращает их как есть.
     У SURFACE_ROW — кнопка «по кадру» (pick_requested): RecordsPage ждёт щелчок по кадру и пишет значение
-    в settings.py или в колонку таблицы, имя которой записано в SURFACE_ROW.
+    в settings.py или в колонку таблицы, имя которой записано в SURFACE_ROW. У числового SCALE_MM_PER_PX —
+    кнопка «по фото…» (measure_scale): фото, две точки отрезка и его длина в см/мм — масштаб встаёт в поле
+    как обычная несохранённая правка (app/scale_dialog.py).
     """
 
     edited = Signal()  # значения с правками изменились — пересчитать кадр
@@ -329,6 +346,7 @@ class ParamsPanel(QWidget):
         self.modules: dict[str, Any] = {}
         self.files: dict[str, SettingsFile] = {}
         self.fields: dict[tuple[str, str], ParamField] = {}
+        self._scale_dir: Path | None = None  # папка последнего фото для «по фото…» (масштаб)
         self.headers: list[tuple[QLabel, list[ParamField]]] = []  # заголовки разделов и их поля (для поиска)
         self.history: list[tuple[str, str, str, str]] = []  # шаги отмены: kind, имя, текст до, после
         self.redo_history: list[tuple[str, str, str, str]] = []
@@ -427,6 +445,7 @@ class ParamsPanel(QWidget):
                 field.edited.connect(self._edited)
                 field.finished.connect(self._break_merge)
                 field.pick.connect(self.pick_requested.emit)
+                field.scale_requested.connect(self.measure_scale)
                 field.show_text(self.files[kind].text(setting.name), self.files[kind].changed(setting.name))
                 self.form.addWidget(field)
                 self.fields[(kind, setting.name)] = field
@@ -526,6 +545,32 @@ class ParamsPanel(QWidget):
             return
         self.history, self.redo_history, self._merge = [], [], None
         self.history_reset.emit()
+
+    def measure_scale(self) -> None:
+        """«по фото…» у SCALE_MM_PER_PX: выбрать фото, отметить отрезок, ввести длину — записать масштаб."""
+        start = self._scale_dir or self._images_dir() or project_path(".")
+        path, _ = QFileDialog.getOpenFileName(self, "Фото для масштаба", str(start), IMAGE_FILTER)
+        if not path:
+            return
+        try:
+            dialog = ScaleDialog(Path(path), self)
+        except Exception as error:  # битый файл или не картинка — понятное сообщение, окно не падает
+            QMessageBox.warning(self, "Не удалось открыть фото", f"{type(error).__name__}: {error}")
+            return
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.scale is None:
+            return
+        self._scale_dir = Path(path).parent
+        text = f"{dialog.scale:.6g}"
+        self.set_text("settings", "SCALE_MM_PER_PX", text)
+        self.message.emit(f"SCALE_MM_PER_PX = {text} мм/px (по фото)")
+
+    def _images_dir(self) -> Path | None:
+        """Папка кадров эксперимента — с неё начинать выбор фото; None — её нет."""
+        value = getattr(self.modules.get("settings"), "IMAGES_DIR", None)
+        if not value:
+            return None
+        path = project_path(value)
+        return path if path.is_dir() else None
 
     def set_text(self, kind: str, name: str, text: str) -> None:
         """Правка значения name (текст — как в файле), как если бы её набрали в поле."""
