@@ -1,8 +1,9 @@
 """Главное окно приложения: две большие части — «Обработка измерений» и «Обработка результатов».
 
 «Обработка измерений» — работа с одним экспериментом: вверху выбор эксперимента, «Сделать текущим»,
-«Сохранить», «Перечитать», ниже вкладки «Записи», «Запуск», «Результаты». «Обработка результатов»
-(app/analysis_page.py) — распределения по результатам любых экспериментов, от выбранного здесь не зависит.
+«Сохранить», «Перечитать», «Создать эксперимент…» (окно app/new_experiment.py), ниже вкладки «Записи»,
+«Запуск», «Результаты». «Обработка результатов» (app/analysis_page.py) — распределения по результатам
+любых экспериментов, от выбранного здесь не зависит.
 
 Эксперимент при запуске — из experiments/current.py. Другой можно выбрать в списке вверху окна: это меняет
 эксперимент только в окне; «Сделать текущим» записывает выбранный в experiments/current.py (тогда его же
@@ -21,11 +22,12 @@ from types import ModuleType
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QApplication, QComboBox, QLabel, QLineEdit, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPlainTextEdit, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from app.analysis_page import AnalysisPage
 from app.jobs_page import JobsPage
+from app.new_experiment import NewExperimentDialog
 from app.records_page import RecordsPage
 from app.results_page import ResultsPage
 from lib.common.config_edit import current_experiment, set_current_experiment
@@ -87,6 +89,12 @@ class MainWindow(QMainWindow):
             action.setToolTip(tip)
             action.triggered.connect(slot)
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        self.new_experiment = QAction("Создать эксперимент…", self)
+        self.new_experiment.setToolTip("Новая папка в experiments/: settings.py и thresholds.py из выбранного "
+                                       "эксперимента, таблица записей (если её нет) и папка результатов")
+        self.new_experiment.triggered.connect(self._new_experiment)
+        toolbar.addAction(self.new_experiment)
 
         self.records = RecordsPage(settings, thresholds, workers)
         self.records.changed.connect(self._update_title)
@@ -223,6 +231,43 @@ class MainWindow(QMainWindow):
         self.jobs.refresh()
         self._update_title()
         self.statusBar().showMessage(f"Эксперимент {name}", STATUS_MS)
+
+    def _new_experiment(self) -> None:
+        """«Создать эксперимент…»: окно с путями; после создания — переключиться на новый эксперимент."""
+        if self.jobs.running:
+            self.statusBar().showMessage("Идёт обработка записей — сначала остановите её (вкладка «Запуск»)", STATUS_MS)
+            return
+        dialog = NewExperimentDialog(ROOT / "experiments", experiment_names(), experiment_name(self.settings), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        importlib.invalidate_caches()  # новый пакет experiments.<имя> — чтобы import его нашёл
+        if dialog.make_current.isChecked():
+            try:
+                set_current_experiment(CURRENT_FILE, dialog.created)
+            except OSError as error:
+                QMessageBox.warning(self, "Не удалось записать experiments/current.py", str(error))
+        self._refresh_experiments()
+        self._choose_experiment(dialog.created)
+        if experiment_name(self.settings) == dialog.created:
+            self.experiment.blockSignals(True)
+            self.experiment.setCurrentText(dialog.created)
+            self.experiment.blockSignals(False)
+        self._update_title()
+        self.statusBar().showMessage(f"Эксперимент {dialog.created} создан (настройки и пороги — из "
+                                     f"«{dialog.source_name}»)", STATUS_MS)
+
+    def _refresh_experiments(self) -> None:
+        """Перечитать список экспериментов в панели (после создания нового), сохранив выбранный."""
+        names = experiment_names()
+        current = experiment_name(self.settings)
+        if current and current not in names:
+            names.append(current)
+        self.experiment.blockSignals(True)
+        self.experiment.clear()
+        self.experiment.addItems(names if names else ["—"])
+        self.experiment.setCurrentText(current or "—")
+        self.experiment.setEnabled(bool(current))
+        self.experiment.blockSignals(False)
 
     def _make_current(self) -> None:
         """«Сделать текущим»: записать выбранный эксперимент в experiments/current.py."""

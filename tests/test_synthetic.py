@@ -27,7 +27,10 @@ from openpyxl import Workbook, load_workbook
 from PIL import Image
 
 from lib.common import files
+from lib.common.config_edit import SettingsFile
+from lib.common.experiment_edit import create_experiment
 from lib.common.records import read_records
+from lib.common.table_edit import read_table
 
 matplotlib.use("Agg")  # окно просмотра рисуется в память, на экран не выводится
 ROOT = Path(__file__).resolve().parents[1]
@@ -768,6 +771,113 @@ def test_results_processing_loads_st4_selects_plots_and_exports(run, tmp_path):
     fourth = AnalysisPage(tmp_path / "experiments")
     fourth.set_state(old_file)
     assert fourth.color_by.currentData() == "area_low_edge"
+
+
+def _source_experiment(root: Path) -> Path:
+    """Эксперимент-образец для создания нового: settings.py, thresholds.py."""
+    source = root / "experiments" / "old"
+    source.mkdir(parents=True)
+    (source / "settings.py").write_bytes((
+        "# эксперимент-образец\n"
+        'IMAGES_DIR = "C:/old"  # кадры\n'
+        'TABLE_FILE = "C:/old/table.xlsx"  # таблица\n'
+        'OUTPUT_DIR = "C:/old/results"  # результаты\n\n'
+        "CONDITIONS = [1]  # номера условий\n"
+        'RECORDS = ["F40_1"]  # имена записей\n\n'
+        "SCALE_MM_PER_PX = 0.05  # масштаб\n"
+        'FPS = "fps"  # кадров в секунду\n'
+        'SURFACE_ROW = "surface_row"  # строка воды\n'
+        "BACKGROUND_FRAME = 2  # фон\n"
+        "ERASE_REGIONS = []\n"
+        'MATLAB_RESULTS_DIR = "C:/old/matlab"  # результаты MATLAB\n').encode("utf-8"))
+    (source / "thresholds.py").write_bytes(b"RIM_CLOSE_RADIUS = 5  # px\n")
+    return source
+
+
+def _images_folder(root: Path) -> Path:
+    """Папка кадров: две подпапки-записи с картинками и папка без картинок."""
+    images = root / "images"
+    for record, image in (("recA", "a_0001.jpg"), ("recB", "b_0001.png")):
+        (images / record).mkdir(parents=True)
+        (images / record / image).write_bytes(b"")
+    (images / "notes").mkdir()
+    (images / "notes" / "readme.txt").write_text("не кадры", encoding="utf-8")
+    return images
+
+
+def test_new_experiment_copies_source_makes_settings_and_table(tmp_path):
+    source = _source_experiment(tmp_path)
+    images = _images_folder(tmp_path)
+    experiments, table, output = tmp_path / "experiments", tmp_path / "new" / "records.xlsx", tmp_path / "new" / "results"
+    folder = create_experiment(experiments, "fresh", images, table, output, "old")
+
+    assert folder == experiments / "fresh" and folder.is_dir()
+    assert (folder / "thresholds.py").read_bytes() == (source / "thresholds.py").read_bytes()
+    text = (folder / "settings.py").read_text(encoding="utf-8")
+    assert text.splitlines()[0].startswith("# Эксперимент «fresh» — создан")
+    assert "\n# MATLAB_RESULTS_DIR" in text and "\nMATLAB_RESULTS_DIR" not in text
+    settings = SettingsFile(folder / "settings.py").values()
+    assert (settings["IMAGES_DIR"], settings["TABLE_FILE"], settings["OUTPUT_DIR"]) == (
+        str(images), str(table), str(output))
+    assert settings["CONDITIONS"] == [] and settings["RECORDS"] == []  # образец не ограничивает записи
+    assert settings["FPS"] == "fps" and settings["SCALE_MM_PER_PX"] == 0.05  # остальное — из образца
+
+    headers, descriptions, rows = read_table(table)
+    assert headers == ["cond_num", "rec_name", "images_path_side", "start_frame", "fin_frame", "rim",
+                       "c_x", "c_y", "fps", "surface_row"]
+    assert descriptions["rec_name"] == "имя записи" and descriptions["surface_row"]
+    assert [(row.values["rec_name"], row.values["images_path_side"]) for row in rows] == [
+        ("recA", "recA"), ("recB", "recB")]  # папка без картинок в таблицу не попала
+    assert read_records(table)[0].path == "recA"
+    assert output.is_dir()  # папка результатов создана
+
+
+def test_new_experiment_keeps_existing_table_and_reports_bad_values(tmp_path):
+    _source_experiment(tmp_path)
+    images = _images_folder(tmp_path)
+    experiments = tmp_path / "experiments"
+    table = tmp_path / "existing.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["rec_name", "images_path_side"])
+    workbook.active.append([None, None])
+    workbook.active.append(["recX", "recX"])
+    workbook.save(table)
+    before = table.read_bytes()
+    create_experiment(experiments, "fresh", images, table, tmp_path / "out", "old")
+    assert table.read_bytes() == before  # существующая таблица не тронута
+
+    with pytest.raises(ValueError):
+        create_experiment(experiments, "bad name", images, tmp_path / "t.xlsx", tmp_path / "out2", "old")
+    with pytest.raises(FileExistsError):
+        create_experiment(experiments, "fresh", images, tmp_path / "t2.xlsx", tmp_path / "out3", "old")
+
+
+def test_new_experiment_dialog_creates_files_without_screen(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # окно без экрана
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    from app.new_experiment import NewExperimentDialog
+
+    application = QApplication.instance() or QApplication([])  # noqa: F841 — нужно окну
+    _source_experiment(tmp_path)
+    images = _images_folder(tmp_path)
+    experiments = tmp_path / "experiments"
+    dialog = NewExperimentDialog(experiments, ["old"], "old")
+    dialog.name_edit.setText("fresh")  # таблица и папка результатов подставляются по имени
+    default_table = Path(dialog.table_edit.text())
+    assert default_table.name == "records.xlsx" and default_table.parent.name == "fresh"
+    dialog.images_edit.setText(str(images))
+    dialog.output_edit.setText(str(tmp_path / "out"))
+    assert dialog.create() and dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.created == "fresh" and dialog.source_name == "old" and dialog.table_created
+    assert (experiments / "fresh" / "settings.py").is_file() and dialog.make_current.isChecked()
+    assert read_records(experiments / "fresh" / "records.xlsx")[0].name == "recA"
+
+    bad = NewExperimentDialog(experiments, ["old"], "old")
+    bad.name_edit.setText("bad name")
+    bad.images_edit.setText(str(images))
+    assert not bad.create() and "Имя" in bad.error.text()
+    bad.close()
 
 
 def test_check_painter_toggles_by_row_click_drag_and_shift():
