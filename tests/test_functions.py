@@ -20,7 +20,8 @@ from openpyxl.styles import PatternFill
 from lib.analysis.dataset import DataTable, find_sources, load
 from lib.analysis.formulas import computed_columns, evaluate, fit, names_in, parameters_of
 from lib.analysis.labplot import write_csv, write_lml
-from lib.analysis.stats import Condition, binned, histogram, select, split, window_edges
+from lib.analysis.stats import (Condition, binned, histogram, parse_edges, select, split, split_intervals,
+                                window_edges)
 from lib.common.config_edit import SettingsFile, current_experiment, set_current_experiment, value_text
 from lib.common.files import last_number_in_name, save_dat
 from lib.common.records import PROJECT_DIR, project_path, read_records, record_setting
@@ -471,6 +472,26 @@ def test_selection_windows_histogram_and_binned_statistics():
     median = binned(table.columns["r"], table.columns["v"], np.array([0.0, 5.0]), "median")
     assert median.y[0] == 9 and (median.low[0], median.high[0]) == (7, 10)
     assert [label for label, part in split(table, "F")] == ["F = 140", "F = 160"]
+
+
+def test_split_by_intervals_and_own_edges():
+    table = DataTable({"r": np.array([0.0, 50.0, 100.0, 150.0, 200.0, np.nan]),
+                       "v": np.arange(6, dtype=float)})
+    groups = split_intervals(table, "r", np.array([0.0, 100.0, 200.0]))
+    assert [label for label, _ in groups] == ["r 0…100", "r 100…200"]
+    # 100 — в верхний интервал, 200 — в последний (правая граница включается), NaN — никуда
+    assert [part.columns["r"].tolist() for _, part in groups] == [[0.0, 50.0], [100.0, 150.0, 200.0]]
+    assert [label for label, _ in split_intervals(table, "r", np.array([0.0, 100.0, 200.0, 300.0]))] == \
+           ["r 0…100", "r 100…200", "r 200…300"]  # 200 — уже в верхнем интервале
+    first_two = table.take(np.array([True, True, False, False, False, False]))  # только r = 0 и 50
+    assert [label for label, _ in split_intervals(first_two, "r", np.array([0.0, 100.0, 200.0]))] == \
+           ["r 0…100"]  # пустой интервал не показывается
+    assert split_intervals(table, "r", np.array([500.0, 600.0])) == []
+    assert parse_edges("0, 100; 250.5 400").tolist() == [0.0, 100.0, 250.5, 400.0]
+    assert parse_edges("100, 0, 100").tolist() == [0.0, 100.0]  # по возрастанию, повторы убраны
+    for bad in ("", "0", "0, x", "0, nan"):
+        with pytest.raises(ValueError):
+            parse_edges(bad)
 
 
 def test_labplot_project_and_csv_hold_the_same_numbers(tmp_path):

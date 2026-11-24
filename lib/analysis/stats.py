@@ -7,9 +7,11 @@
     зависимость y(x) (binned)   статистика y по строкам, у которых x в окне (STATISTICS): среднее ± СКО,
                                 среднее ± ошибка среднего (СКО / √n), медиана с квартилями (25 % и 75 %), число.
 Строка с x на правой границе последнего окна относится к нему; вне окон — не учитывается.
-Серии (split) — то же отдельно для каждого значения выбранной колонки (например, F); окна у всех серий одни.
+Серии (split) — то же отдельно для каждого значения выбранной колонки (например, F) или для каждого
+интервала числовой колонки (split_intervals: «r 0…100»); окна у всех серий одни.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -176,3 +178,40 @@ def split(table: DataTable, by: str | None) -> list[tuple[str, DataTable]]:
         mask = column == value if numeric else column.astype(str) == value
         groups.append((f"{by} = {label_value(value)}", table.take(mask)))
     return groups
+
+
+def split_intervals(table: DataTable, by: str, edges: np.ndarray) -> list[tuple[str, DataTable]]:
+    """Серии: [(подпись «r 0…100», строки)] по интервалам edges числовой колонки by. Границы — как у окон:
+    левая включается, правая нет; правая граница последнего интервала включается. Строки с NaN и вне
+    интервалов не входят ни в одну серию; пустые интервалы пропускаются."""
+    column = np.asarray(table.columns[by], dtype=np.float64)
+    edges = np.asarray(edges, dtype=np.float64)
+    index = _window_index(column, edges)
+    groups = []
+    for k in range(len(edges) - 1):
+        mask = index == k
+        if mask.any():
+            label = f"{by} {label_value(float(edges[k]))}…{label_value(float(edges[k + 1]))}"
+            groups.append((label, table.take(mask)))
+    return groups
+
+
+def parse_edges(text: str) -> np.ndarray:
+    """Границы интервалов из строки «0, 100, 200.5»: числа через запятую, точку с запятой или пробелы
+    (дробная часть — с точкой); по возрастанию, повторы убираются. Меньше двух разных чисел, не числа
+    или не конечные — ValueError с понятным текстом."""
+    values = []
+    for part in re.split(r"[,;\s]+", text.strip()):
+        if not part:
+            continue
+        try:
+            value = float(part)
+        except ValueError:
+            raise ValueError(f"границы — числа через запятую, например: 0, 100, 200 (не понял «{part}»)") from None
+        if not np.isfinite(value):
+            raise ValueError(f"границы должны быть конечными числами (не понял «{part}»)")
+        values.append(value)
+    edges = np.array(sorted(set(values)), dtype=np.float64)
+    if edges.size < 2:
+        raise ValueError("нужно не меньше двух разных границ, например: 0, 100, 200")
+    return edges

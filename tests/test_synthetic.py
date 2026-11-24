@@ -840,16 +840,65 @@ def test_results_processing_loads_st4_selects_plots_and_exports(run, tmp_path):
         name.endswith("| " + hidden) for name in page.series_table()["series"])
     labels = {t.get_text() for ax in page.figure.axes if ax.get_legend() for t in ax.get_legend().get_texts()}
     assert "своя подпись" in labels
+
+    # разделение по интервалам r: несколько кривых на одном графике; пересчёт — по кнопке
+    r = page.selection.columns["r"]
+    page.color_by.setCurrentIndex(page.color_by.findData("r"))
+    color = page.split_rows["color"]
+    color.mode.setCurrentIndex(color.mode.findData("equal"))
+    color.count.setText("2")
+    page.replot()
+    assert 1 < len(page.drawn) <= 2 and all(d.key.startswith("r ") and "…" in d.key for d in page.drawn)
+    assert "цвет — r по интервалам (2)" in page.summary.text()
+    assert not page.auto_replot.isChecked()  # «строить сразу» по умолчанию снят
+    before = [(d.key, d.series.y.size) for d in page.drawn]
+    color.count.setText("3")  # расчётная правка без кнопки ничего не пересчитывает
+    page.timer.stop()
+    assert [(d.key, d.series.y.size) for d in page.drawn] == before
+    assert "Перестроить график" in page.replot_hint.text() and not page.replot_hint.isHidden()
+    page.replot()
+    assert "цвет — r по интервалам (3)" in page.summary.text() and page.replot_hint.isHidden()
+    color.mode.setCurrentIndex(color.mode.findData("edges"))  # свои границы: пустые — сообщение, не падение
+    color.boundaries.setText("")
+    page.replot()
+    assert page.curve_table.rowCount() == 0 and "границ" in page.summary.text()
+    color.boundaries.setText(f"{float(r.min()) - 1:g}, {(float(r.min()) + float(r.max())) / 2:g}, "
+                             f"{float(r.max()) + 1:g}")
+    page.replot()
+    assert len(page.drawn) == 2 and "по своим границам (2)" in page.summary.text()
+    page.color_by.setCurrentIndex(page.color_by.findData(""))
+    color.mode.setCurrentIndex(color.mode.findData("values"))
+    page.facet_by.setCurrentIndex(page.facet_by.findData("r"))  # графики рядом по полосам r
+    facet = page.split_rows["facet"]
+    facet.mode.setCurrentIndex(facet.mode.findData("equal"))
+    facet.count.setText("2")
+    page.replot()
+    assert len({d.panel for d in page.drawn}) == 2 and all("…" in d.panel for d in page.drawn)
+    facet.mode.setCurrentIndex(facet.mode.findData("values"))
+    page.facet_by.setCurrentIndex(page.facet_by.findData(""))
+    page.color_by.setCurrentIndex(page.color_by.findData("r"))
+    color.mode.setCurrentIndex(color.mode.findData("equal"))
+    color.boundaries.setText("")
+    color.count.setText("2")
+    page.replot()
+
     third = AnalysisPage(tmp_path / "experiments")  # вид кривых и разделение — в файл и обратно
     third.set_state(json.loads(json.dumps(page.state())))
     assert third.styles == page.styles and len(third.visible) == len(page.visible)
+    assert third.split_rows["color"].mode.currentData() == "equal"
+    assert third.split_rows["color"].count.text() == "2"
+    assert third.auto_replot.isChecked() == page.auto_replot.isChecked()
     old_file = page.state()
     old_file["combos"]["series_by"] = old_file["combos"].pop("color_by")  # файл настроек прежнего вида
     for name in ("marker_by", "facet_by"):
         old_file["combos"].pop(name)
+    old_file.pop("splits")
+    old_file["checks"].pop("auto_replot")
     fourth = AnalysisPage(tmp_path / "experiments")
     fourth.set_state(old_file)
-    assert fourth.color_by.currentData() == "area_low_edge"
+    assert fourth.color_by.currentData() == "r"
+    assert fourth.split_rows["color"].mode.currentData() == "values"  # старый файл — по значениям
+    assert not fourth.auto_replot.isChecked()
 
 
 def _source_experiment(root: Path) -> Path:

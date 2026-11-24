@@ -12,13 +12,17 @@
     2 Свои колонки   строки «имя = формула», например «U = 0.07*F» — новые колонки для осей и выборки.
     3 Выборка        условия: колонка «равна» выбранным значениям (например, F = 140) или лежит «от–до»; действуют
                      все условия сразу; у каждого — сколько строк остаётся после него.
-В середине — сводка (что построено, выборка, разделение, сколько кривых), график (увеличение, сдвиг, сохранение
-PNG/SVG/PDF — панель под ним), ниже — таблица посчитанного.
+В середине — кнопка «Перестроить график» (пересчитать выборку и кривые по текущим настройкам) и флажок
+«строить сразу после правок» (без него правки расчёта ждут кнопки), сводка (что построено, выборка,
+разделение, сколько кривых), график (увеличение, сдвиг, сохранение PNG/SVG/PDF — панель под ним), ниже —
+таблица посчитанного. Правки вида (кривые, оси, оформление, своя кривая) перерисовываются сразу и строк
+не пересчитывают.
 Справа:
     4 Что строить    распределение (гистограмма) X; зависимость Y от X по окнам X (среднее ± СКО, ± ошибка среднего,
                      медиана с квартилями, число); точки. Окна — ширина или число, пределы «от–до».
-    5 Разделение     цвет по колонке (своя кривая на каждое значение, например F), маркер и линия — по другой
-                     (например, эксперимент), графики рядом — по третьей (общие оси; не больше MAX_PANELS).
+    5 Разделение     по колонке: по значениям (своя кривая на каждое значение, например F) или по интервалам
+                     числовой колонки (равные — ширина или число и пределы; свои границы списком, например
+                     «0, 100, 200»). Цвет, маркер и линия, графики рядом — общие оси (не больше MAX_PANELS).
     6 Кривые         список кривых: показать / скрыть, цвет, маркер, линия, подпись в легенде, строк; правки
                      помнятся по подписи кривой и сохраняются в файл настроек.
     7 Своя кривая    функция f(x) с параметрами, например «a*x**b + c»: нарисовать с заданными значениями или
@@ -53,13 +57,14 @@ from app.jobs_page import CheckPainter
 from lib.analysis.dataset import LEVELS, DataTable, Source, find_sources, load
 from lib.analysis.formulas import FitResult, computed_columns, evaluate, fit, parameters_of
 from lib.analysis.labplot import write_csv, write_lml
-from lib.analysis.stats import (NORMS, STATISTICS, Condition, Series, binned, histogram, label_value, points,
-                                split, window_edges)
+from lib.analysis.stats import (NORMS, STATISTICS, Condition, Series, binned, histogram, label_value, parse_edges,
+                                points, split, split_intervals, window_edges)
 
 log = logging.getLogger(__name__)
 
 KINDS = {"binned": "зависимость Y от X по окнам X", "histogram": "распределение (гистограмма) X",
          "points": "точки (X, Y)"}
+SPLIT_MODES = {"values": "по значениям", "equal": "по интервалам", "edges": "по своим границам"}
 CURVE_MODES = {"off": "не показывать", "draw": "нарисовать с этими значениями", "fit": "подогнать к каждой кривой"}
 LEGENDS = {"best": "сама", "upper right": "справа вверху", "upper left": "слева вверху",
            "lower right": "справа внизу", "lower left": "слева внизу", "none": "не показывать"}
@@ -79,6 +84,7 @@ MAX_CURVES = 120  # кривых на картинке не больше
 MAX_TABLE_ROWS = 3000  # строк в таблице посчитанного
 REPLOT_MS = 200  # пауза перед перестройкой картинки после правки
 CURVE_POINTS = 300  # точек на своей кривой
+DEFAULT_SPLIT_WINDOWS = 5  # интервалов разделения, если не заданы ни ширина, ни число
 
 
 def _number(text: str) -> float | None:
@@ -200,7 +206,8 @@ class ConditionRow(QWidget):
         self.set_table(table)
 
     def set_table(self, table: DataTable) -> None:
-        """Новые данные: список колонок (выбранная колонка и выбранные значения остаются, если есть)."""
+        """Новые данные: список колонок (выбранная колонка и выбранные значения остаются, если есть);
+        перестройку не будит — её начинает тот, кто обновляет данные."""
         self.table = table
         old, chosen = self.column.currentText(), self.state()["values"]
         self.column.blockSignals(True)
@@ -208,11 +215,11 @@ class ConditionRow(QWidget):
         self.column.addItems(table.names)
         self.column.setCurrentIndex(max(self.column.findText(old), 0))
         self.column.blockSignals(False)
-        self._column_changed()
+        self._column_changed(emit=False)
         if self.column.currentText() == old:
             self._select(chosen)
 
-    def _column_changed(self) -> None:
+    def _column_changed(self, emit: bool = True) -> None:
         """Выбрана колонка: значения для «равно», подсказки границ для «от–до»."""
         name = self.column.currentText()
         self.values.blockSignals(True)
@@ -225,23 +232,26 @@ class ConditionRow(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, value)
                     self.values.addItem(item)
             numeric = self.table.is_numeric(name)
+            self.mode.blockSignals(True)
             self.mode.model().item(1).setEnabled(numeric)  # «от–до» — только для чисел
             if not numeric:
                 self.mode.setCurrentIndex(0)
             elif len(unique) > MAX_VALUES:
                 self.mode.setCurrentIndex(1)
+            self.mode.blockSignals(False)
             if numeric and unique:
                 self.low.setPlaceholderText(f"{unique[0]:g}")
                 self.high.setPlaceholderText(f"{unique[-1]:g}")
         self.values.blockSignals(False)
-        self._mode_changed()
+        self._mode_changed(emit)
 
-    def _mode_changed(self) -> None:
+    def _mode_changed(self, emit: bool = True) -> None:
         """«равно» — список значений, «от–до» — два поля."""
         ranged = self.mode.currentIndex() == 1
         self.values.setVisible(not ranged)
         self.range_row.setVisible(ranged)
-        self.changed.emit()
+        if emit:
+            self.changed.emit()
 
     def condition(self) -> Condition | None:
         """Условие по полям (None — колонка не выбрана или ничего не задано)."""
@@ -260,10 +270,12 @@ class ConditionRow(QWidget):
                            else f"→ остаётся строк: {_count(rows)}")
 
     def _select(self, values: list[Any]) -> None:
-        """Выбрать в списке «равно» строки с этими значениями."""
+        """Выбрать в списке «равно» строки с этими значениями (программно — без сигнала о правке)."""
+        self.values.blockSignals(True)
         for i in range(self.values.count()):
             item = self.values.item(i)
             item.setSelected(item.data(Qt.ItemDataRole.UserRole) in values)
+        self.values.blockSignals(False)
 
     def select_values(self, texts: list[str]) -> None:
         """Выбрать значения по подписям (как если бы их отметили мышью)."""
@@ -285,6 +297,181 @@ class ConditionRow(QWidget):
         self._select(list(state.get("values", [])))
         self.low.setText(state.get("low", ""))
         self.high.setText(state.get("high", ""))
+
+
+class SplitRow(QWidget):
+    """Одно разделение графика: колонка и режим — по значениям (своя серия на каждое значение) или по
+    интервалам числовой колонки (равные — ширина или число и пределы; свои границы списком).
+    title — подпись строки («цвет по»); changed — правка; table — загруженные данные."""
+
+    changed = Signal()
+
+    def __init__(self, title: str, table: DataTable) -> None:
+        super().__init__()
+        self.title = title
+        self.table = table
+        self.column = QComboBox()
+        self.mode = QComboBox()
+        for key, text in SPLIT_MODES.items():
+            self.mode.addItem(text, key)
+        self.mode.setToolTip("по значениям — своя кривая на каждое значение колонки; по интервалам — на каждый "
+                             "равный отрезок числовой колонки; по своим границам — отрезки, заданные числами")
+        self.low, self.high = QLineEdit(), QLineEdit()
+        self.width_edit, self.count = QLineEdit(), QLineEdit()  # width_edit: не перекрывать QWidget.width()
+        self.boundaries = QLineEdit()
+        self.low.setPlaceholderText("мин.")
+        self.high.setPlaceholderText("макс.")
+        self.count.setPlaceholderText(f"({DEFAULT_SPLIT_WINDOWS})")
+        self.boundaries.setPlaceholderText("0, 100, 200")
+        self.boundaries.setToolTip("границы через запятую или пробел (дробная часть — с точкой); строки вне "
+                                   "границ не попадут ни в одну кривую")
+        self.equal_row = QWidget()
+        equal = QVBoxLayout(self.equal_row)
+        equal.setContentsMargins(0, 0, 0, 0)
+        equal.setSpacing(2)
+        bounds = QHBoxLayout()
+        bounds.setContentsMargins(0, 0, 0, 0)
+        bounds.addWidget(QLabel("от"))
+        bounds.addWidget(self.low)
+        bounds.addWidget(QLabel("до"))
+        bounds.addWidget(self.high)
+        sizes = QHBoxLayout()
+        sizes.setContentsMargins(0, 0, 0, 0)
+        sizes.addWidget(QLabel("ширина"))
+        sizes.addWidget(self.width_edit)
+        sizes.addWidget(QLabel("или число"))
+        sizes.addWidget(self.count)
+        equal.addLayout(bounds)
+        equal.addLayout(sizes)
+        self.edges_row = QWidget()
+        edges = QHBoxLayout(self.edges_row)
+        edges.setContentsMargins(0, 0, 0, 0)
+        edges.addWidget(QLabel("границы"))
+        edges.addWidget(self.boundaries)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addWidget(self.column, 1)
+        top.addWidget(self.mode)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 6)
+        layout.addLayout(top)
+        layout.addWidget(self.equal_row)
+        layout.addWidget(self.edges_row)
+        self.column.currentIndexChanged.connect(lambda _: self._column_changed())
+        self.mode.currentIndexChanged.connect(lambda _: self._mode_changed())
+        for line in (self.low, self.high, self.width_edit, self.count, self.boundaries):
+            line.textChanged.connect(lambda _: self.changed.emit())
+        self.set_table(table)
+
+    def set_table(self, table: DataTable) -> None:
+        """Новые данные: колонки — все числовые и с немногими значениями (выбранная остаётся, если есть);
+        перестройку не будит — её начинает тот, кто обновляет данные."""
+        self.table = table
+        old = self.column.currentData()
+        self.column.blockSignals(True)
+        self.column.clear()
+        self.column.addItem("— нет", "")
+        for name in table.names:
+            if table.is_numeric(name) or len(table.unique(name)) <= MAX_SERIES_VALUES:
+                self.column.addItem(table.label(name), name)
+        self.column.setCurrentIndex(max(self.column.findData(old), 0))
+        self.column.blockSignals(False)
+        self._column_changed(emit=False)
+
+    def _column_changed(self, emit: bool = True) -> None:
+        """Колонка выбрана: интервалы — только для чисел; «нет» — настройки не нужны."""
+        name = self.column.currentData()
+        numeric = bool(name) and self.table.is_numeric(name)
+        self.mode.blockSignals(True)
+        for k in (1, 2):
+            self.mode.model().item(k).setEnabled(numeric)
+        if self.mode.currentIndex() and not numeric:
+            self.mode.setCurrentIndex(0)
+        self.mode.blockSignals(False)
+        self._mode_changed(emit)
+
+    def _mode_changed(self, emit: bool = True) -> None:
+        """Поля интервалов видны только в своём режиме и только для выбранной колонки."""
+        mode = self.mode.currentData()
+        chosen = bool(self.column.currentData())
+        self.equal_row.setVisible(chosen and mode == "equal")
+        self.edges_row.setVisible(chosen and mode == "edges")
+        if emit:
+            self.changed.emit()
+
+    def column_name(self) -> str | None:
+        """Имя колонки разделения (None — «нет»)."""
+        return self.column.currentData() or None
+
+    def intervals(self) -> bool:
+        """Делит ли по интервалам (равным или своим границам)."""
+        return self.mode.currentData() in ("equal", "edges")
+
+    def edges(self, reference: DataTable) -> np.ndarray | None:
+        """Границы интервалов по всей выборке reference (None — разделение по значениям); при своих
+        границах — ValueError с понятным текстом, если они не заданы или не читаются."""
+        name = self.column_name()
+        if not name or not self.intervals() or not reference.is_numeric(name):
+            return None
+        if self.mode.currentData() == "edges":
+            return parse_edges(self.boundaries.text())
+        width = _number(self.width_edit.text())
+        count = _number(self.count.text())
+        return window_edges(reference.columns[name],
+                            width=width if width and width > 0 else None,
+                            count=(int(count) if count and count >= 1 else
+                                   (None if width and width > 0 else DEFAULT_SPLIT_WINDOWS)),
+                            low=_number(self.low.text()), high=_number(self.high.text()))
+
+    def groups(self, table: DataTable, edges: np.ndarray | None) -> list[tuple[str, DataTable]]:
+        """Серии по колонке: по значениям или по интервалам edges; колонки нет — одна серия без подписи."""
+        name = self.column_name()
+        if not name:
+            return [("", table)]
+        return split_intervals(table, name, edges) if edges is not None else split(table, name)
+
+    def series_count(self, reference: DataTable, edges: np.ndarray | None = None) -> int:
+        """Сколько будет серий: разных значений колонки или интервалов (пустые могут сократить)."""
+        name = self.column_name()
+        if not name:
+            return 1
+        return len(reference.unique(name)) if edges is None else max(0, len(edges) - 1)
+
+    def config(self) -> tuple:
+        """Настройки разделения (чтобы понять, что «маркер по» повторяет «цвет по»)."""
+        return (self.column_name(), self.mode.currentData(), self.low.text(), self.high.text(),
+                self.width_edit.text(), self.count.text(), self.boundaries.text())
+
+    def same_split(self, other: "SplitRow") -> bool:
+        """То же ли разделение — та же колонка и все настройки."""
+        return self.config() == other.config()
+
+    def describe(self, reference: DataTable, edges: np.ndarray | None = None) -> str:
+        """Подпись разделения для сводки: «F (3)», «r по интервалам шириной 100 (6)»; edges — границы,
+        уже посчитанные по выборке."""
+        name = self.column_name()
+        if not name or not len(reference):
+            return ""
+        if not self.intervals() or edges is None:
+            return f"{name} ({len(reference.unique(name))})"
+        count = len(edges) - 1
+        if self.mode.currentData() == "edges":
+            return f"{name} по своим границам ({count})"
+        width = _number(self.width_edit.text())
+        return f"{name} по интервалам" + (f" шириной {width:g}" if width and width > 0 else "") + f" ({count})"
+
+    def state(self) -> dict[str, Any]:
+        """Настройки разделения (для сохранения в файл .json)."""
+        return {"mode": self.mode.currentData(), "low": self.low.text(), "high": self.high.text(),
+                "width": self.width_edit.text(), "count": self.count.text(),
+                "boundaries": self.boundaries.text()}
+
+    def set_state(self, state: dict[str, Any]) -> None:
+        """Восстановить настройки (неизвестный режим — по значениям)."""
+        self.mode.setCurrentIndex(max(self.mode.findData(state.get("mode", "values")), 0))
+        for name, attribute in (("low", "low"), ("high", "high"), ("width", "width_edit"), ("count", "count"),
+                                ("boundaries", "boundaries")):
+            getattr(self, attribute).setText(str(state.get(name, "")))
 
 
 class AnalysisPage(QWidget):
@@ -309,37 +496,49 @@ class AnalysisPage(QWidget):
         self.curve_keys: list[str] = []  # кривые в списке «Кривые»
         self.colors: list = []  # цвета значений «цвет по» на текущей картинке
         self.rows: list[ConditionRow] = []
+        self.split_rows: dict[str, SplitRow] = {}  # разделения: цвет, маркер, графики рядом
+        self.pending_compute = False  # есть непересчитанные правки (когда «строить сразу» снят)
+        self._note = ""  # сообщение вместо графика (нет данных, пустая выборка, ошибка разделения)
+        self._conditions: list[Condition] = []  # условия выборки последнего пересчёта
+        self._edges: np.ndarray | None = None  # окна X последнего пересчёта
+        self._split_text: dict[str, str] = {}  # подписи разделений последнего пересчёта
+        self._x_name: str | None = None
+        self._y_name: str | None = None
         self.last_dir = str(Path.home())
-        self.timer = QTimer(self)
+        self.timer = QTimer(self)  # пересчёт строк (только при «строить сразу»)
         self.timer.setSingleShot(True)
         self.timer.setInterval(REPLOT_MS)
-        self.timer.timeout.connect(self.replot)
+        self.timer.timeout.connect(self._auto_replot)
+        self.view_timer = QTimer(self)  # перерисовка вида — строки не пересчитываются
+        self.view_timer.setSingleShot(True)
+        self.view_timer.setInterval(REPLOT_MS)
+        self.view_timer.timeout.connect(self.redraw)
         self._build()
         self.refresh_sources()
         self.replot()
 
     # ------------------------------------------------------------------ разметка
 
-    def _combo(self, items: dict[str, str]) -> QComboBox:
-        """Выпадающий список {ключ: подпись}; выбор — перестроить картинку."""
+    def _combo(self, items: dict[str, str], compute: bool = True) -> QComboBox:
+        """Выпадающий список {ключ: подпись}; выбор — пересчитать (compute) или только перерисовать."""
         box = QComboBox()
         for key, text in items.items():
             box.addItem(text, key)
-        box.currentIndexChanged.connect(lambda _: self.timer.start())
+        box.currentIndexChanged.connect(lambda _: self._changed(compute))
         return box
 
-    def _edit(self, placeholder: str) -> QLineEdit:
-        """Поле ввода с подсказкой; правка — перестроить картинку."""
+    def _edit(self, placeholder: str, compute: bool = True) -> QLineEdit:
+        """Поле ввода с подсказкой; правка — пересчитать (compute) или только перерисовать."""
         line = QLineEdit()
         line.setPlaceholderText(placeholder)
-        line.textChanged.connect(lambda _: self.timer.start())
+        line.textChanged.connect(lambda _: self._changed(compute))
         return line
 
-    def _check(self, text: str, checked: bool = False) -> QCheckBox:
-        """Флажок; щелчок — перестроить картинку."""
+    def _check(self, text: str, checked: bool = False, compute: bool = True) -> QCheckBox:
+        """Флажок; щелчок — пересчитать (compute) или только перерисовать."""
         box = QCheckBox(text)
         box.setChecked(checked)
-        box.toggled.connect(lambda _: self.timer.start())
+        box.toggled.connect(lambda _: self._changed(compute))
         return box
 
     @staticmethod
@@ -359,6 +558,22 @@ class AnalysisPage(QWidget):
 
     def _build(self) -> None:
         """Как в LabPlot: слева данные и выборка, в середине сводка, график и таблица, справа свойства графика."""
+        self.replot_button = QPushButton("Перестроить график")
+        self.replot_button.setToolTip("пересчитать выборку и кривые по текущим настройкам (после правок данных, "
+                                      "выборки, «4 Что строить» и «5 Разделение»)")
+        self.replot_button.clicked.connect(self.replot)
+        self.auto_replot = QCheckBox("строить сразу после правок")
+        self.auto_replot.setToolTip("пересчитывать через 0,2 с после каждой правки; снят — пересчёт по кнопке "
+                                    "(на больших выборках это заметно быстрее)")
+        self.auto_replot.toggled.connect(self._auto_toggled)
+        self.replot_hint = QLabel()
+        self.replot_hint.setStyleSheet("color: #b36b00;")
+        self.replot_hint.setVisible(False)
+        controls = QHBoxLayout()
+        controls.addWidget(self.replot_button)
+        controls.addWidget(self.auto_replot)
+        controls.addWidget(self.replot_hint)
+        controls.addStretch(1)
         left = self._panel([self._data_section(), self._columns_section(), self._selection_section()], 300)
         right = self._panel([self._plot_section(), self._split_section(), self._curves_section(),
                              self._curve_section(), self._axes_section(), self._view_section(),
@@ -373,6 +588,7 @@ class AnalysisPage(QWidget):
         plot = QWidget()
         column = QVBoxLayout(plot)
         column.setContentsMargins(0, 0, 0, 0)
+        column.addLayout(controls)
         column.addWidget(self.summary)
         column.addWidget(self.canvas, 1)
         column.addWidget(NavigationToolbar2QT(self.canvas, plot))
@@ -426,7 +642,7 @@ class AnalysisPage(QWidget):
         self.columns_text.setPlaceholderText("по строке «имя = формула», например:\nU = 0.07*F\nd = 2*r")
         self.columns_text.setMaximumHeight(70)
         self.columns_text.setToolTip("Формулы — по числовым колонкам данных; функции: sqrt, exp, log, sin, cos, abs, …")
-        self.columns_text.textChanged.connect(self.timer.start)
+        self.columns_text.textChanged.connect(lambda: self._changed(True))
         self.columns_info = QLabel()
         self.columns_info.setWordWrap(True)
         section.body.addWidget(self.columns_text)
@@ -453,7 +669,7 @@ class AnalysisPage(QWidget):
         self.kind = self._combo(KINDS)
         self.x_column, self.y_column = QComboBox(), QComboBox()
         for box in (self.x_column, self.y_column):
-            box.currentIndexChanged.connect(lambda _: self.timer.start())
+            box.currentIndexChanged.connect(lambda _: self._changed(True))
         self.window_width, self.window_count = self._edit("ширина"), self._edit("или число (20)")
         self.window_low, self.window_high = self._edit("от: мин."), self._edit("до: макс.")
         self.statistic = self._combo(STATISTICS)
@@ -475,20 +691,20 @@ class AnalysisPage(QWidget):
         return section
 
     def _split_section(self) -> Section:
-        """Раздел «5 Разделение»: цвет, маркер и линия, графики рядом — по колонкам."""
+        """Раздел «5 Разделение»: цвет, маркер и линия, графики рядом — по значениям или по интервалам."""
         section = Section("5 Разделение")
-        self.color_by, self.marker_by, self.facet_by = QComboBox(), QComboBox(), QComboBox()
-        for box, tip in ((self.color_by, "своя кривая и свой цвет на каждое значение колонки, например F"),
-                         (self.marker_by, "своя кривая, маркер и линия на каждое значение другой колонки, "
-                                          "например эксперимент"),
-                         (self.facet_by, f"отдельный график на каждое значение колонки, оси общие "
-                                         f"(не больше {MAX_PANELS})")):
-            box.setToolTip(tip)
-            box.currentIndexChanged.connect(lambda _: self.timer.start())
+        self.split_rows = {}
         form = QFormLayout()
-        form.addRow("цвет по", self.color_by)
-        form.addRow("маркер, линия по", self.marker_by)
-        form.addRow("графики рядом по", self.facet_by)
+        for key, title in (("color", "цвет по"), ("marker", "маркер, линия по"), ("facet", "графики рядом по")):
+            row = SplitRow(title, self.data)
+            row.setToolTip("своя кривая и свой цвет (маркер, график) на каждое значение колонки или на каждый "
+                           "интервал числовой колонки")
+            row.changed.connect(lambda: self._changed(True))
+            self.split_rows[key] = row
+            form.addRow(title, row)
+        self.color_by = self.split_rows["color"].column  # для совместимости с остальным кодом
+        self.marker_by = self.split_rows["marker"].column
+        self.facet_by = self.split_rows["facet"].column
         section.body.addLayout(form)
         return section
 
@@ -516,16 +732,16 @@ class AnalysisPage(QWidget):
     def _curve_section(self) -> Section:
         """Раздел «7 Своя кривая»: формула f(x), параметры, режим, результат."""
         section = Section("7 Своя кривая и подгонка")
-        self.curve_formula = self._edit("f(x), например: a*x**b + c")
+        self.curve_formula = self._edit("f(x), например: a*x**b + c", compute=False)
         self.curve_formula.setToolTip("Функция от x с параметрами; функции: sqrt, exp, log, sin, cos, abs, erf, …")
         self.curve_formula.textChanged.connect(lambda _: self._fill_parameters())
-        self.curve_mode = self._combo(CURVE_MODES)
+        self.curve_mode = self._combo(CURVE_MODES, compute=False)
         self.parameters = QTableWidget(0, 2)
         self.parameters.setHorizontalHeaderLabels(["параметр", "начальное значение"])
         self.parameters.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.parameters.verticalHeader().setVisible(False)
         self.parameters.setMaximumHeight(110)
-        self.parameters.itemChanged.connect(lambda _: self.timer.start())
+        self.parameters.itemChanged.connect(lambda _: self._changed(False))
         self.fit_info = QLabel()
         self.fit_info.setWordWrap(True)
         self.fit_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -536,12 +752,13 @@ class AnalysisPage(QWidget):
     def _axes_section(self) -> Section:
         """Раздел «8 Оси и подписи»: заголовок, подписи, пределы, лог-оси, сетка."""
         section = Section("8 Оси и подписи")
-        self.title = self._edit("заголовок: авто")
-        self.x_label, self.y_label = self._edit("подпись X: авто"), self._edit("подпись Y: авто")
-        self.x_from, self.x_to = self._edit("X от"), self._edit("X до")
-        self.y_from, self.y_to = self._edit("Y от"), self._edit("Y до")
-        self.log_x, self.log_y = self._check("лог. X"), self._check("лог. Y")
-        self.grid = self._check("сетка", True)
+        self.title = self._edit("заголовок: авто", compute=False)
+        self.x_label, self.y_label = (self._edit("подпись X: авто", compute=False),
+                                      self._edit("подпись Y: авто", compute=False))
+        self.x_from, self.x_to = self._edit("X от", compute=False), self._edit("X до", compute=False)
+        self.y_from, self.y_to = self._edit("Y от", compute=False), self._edit("Y до", compute=False)
+        self.log_x, self.log_y = self._check("лог. X", compute=False), self._check("лог. Y", compute=False)
+        self.grid = self._check("сетка", True, compute=False)
         form = QFormLayout()
         form.addRow("заголовок", self.title)
         form.addRow("подпись X", self.x_label)
@@ -559,10 +776,12 @@ class AnalysisPage(QWidget):
     def _view_section(self) -> Section:
         """Раздел «9 Оформление»: легенда, цвета, шрифт, линии, точки, усы разброса."""
         section = Section("9 Оформление")
-        self.legend = self._combo(LEGENDS)
-        self.palette = self._combo(PALETTES)
-        self.error_bars = self._check("разброс (усы)", True)
-        self.font_size, self.line_width, self.marker_size = self._edit("10"), self._edit("1.2"), self._edit("4")
+        self.legend = self._combo(LEGENDS, compute=False)
+        self.palette = self._combo(PALETTES, compute=False)
+        self.error_bars = self._check("разброс (усы)", True, compute=False)
+        self.font_size, self.line_width, self.marker_size = (self._edit("10", compute=False),
+                                                             self._edit("1.2", compute=False),
+                                                             self._edit("4", compute=False))
         form = QFormLayout()
         form.addRow("легенда", self.legend)
         form.addRow("цвета", self.palette)
@@ -667,22 +886,21 @@ class AnalysisPage(QWidget):
     def _fill_columns(self) -> None:
         """Списки колонок X, Y и разделения — по данным (выбранное остаётся, если есть)."""
         numeric = [n for n in self.data.names if self.data.is_numeric(n)]
-        few = [n for n in self.data.names if len(self.data.unique(n)) <= MAX_SERIES_VALUES]
-        for box, names, default in ((self.x_column, numeric, "r"), (self.y_column, numeric, "v"),
-                                    (self.color_by, ["", *few], ""), (self.marker_by, ["", *few], ""),
-                                    (self.facet_by, ["", *few], "")):
+        for box, names, default in ((self.x_column, numeric, "r"), (self.y_column, numeric, "v")):
             old = box.currentData()
             box.blockSignals(True)
             box.clear()
             for name in names:
-                box.addItem(self.data.label(name) if name else "— нет", name)
+                box.addItem(self.data.label(name), name)
             box.setCurrentIndex(max(box.findData(old if old in names else default), 0))
             box.blockSignals(False)
+        for row in self.split_rows.values():
+            row.set_table(self.data)
 
     def add_condition(self) -> ConditionRow:
         """«+ условие»: новая строка условия выборки."""
         row = ConditionRow(self.data)
-        row.changed.connect(self.timer.start)
+        row.changed.connect(lambda: self._changed(True))
         row.removed.connect(self._remove_condition)
         self.conditions.addWidget(row)
         self.rows.append(row)
@@ -692,7 +910,7 @@ class AnalysisPage(QWidget):
         """«×»: убрать условие."""
         self.rows.remove(row)
         row.deleteLater()
-        self.timer.start()
+        self._changed(True)
 
     def _select(self) -> list[Condition]:
         """Выборка по условиям (self.selection); у каждого условия — сколько строк остаётся после него.
@@ -711,19 +929,21 @@ class AnalysisPage(QWidget):
 
     # ------------------------------------------------------------------ кривые: разделение и вид
 
-    def _split(self, kind: str, x_name: str, y_name: str, edges: np.ndarray) -> list[Drawn]:
-        """Кривые выборки: по графикам рядом, затем по цвету, затем по маркеру; у каждой — номера значений
-        цвета и маркера (по всей выборке, чтобы на всех графиках одно значение было одного вида)."""
-        color_by, marker_by, facet_by = (self.color_by.currentData() or None, self.marker_by.currentData() or None,
-                                         self.facet_by.currentData() or None)
-        if marker_by == color_by:
-            marker_by = None
-        color_index = {label: k for k, (label, _) in enumerate(split(self.selection, color_by))}
-        marker_index = {label: k for k, (label, _) in enumerate(split(self.selection, marker_by))}
+    def _split(self, kind: str, x_name: str, y_name: str, edges: np.ndarray,
+               split_edges: dict[str, np.ndarray | None]) -> list[Drawn]:
+        """Кривые выборки: по графикам рядом, затем по цвету, затем по маркеру; границы интервалов у всех
+        серий одни — по всей выборке (split_edges); у каждой кривой — номера значений цвета и маркера."""
+        color, marker, facet = (self.split_rows[key] for key in ("color", "marker", "facet"))
+        marker_off = not marker.column_name() or marker.same_split(color)
+        color_index = {label: k for k, (label, _) in
+                       enumerate(color.groups(self.selection, split_edges["color"]))}
+        marker_index = ({"": 0} if marker_off else
+                        {label: k for k, (label, _) in enumerate(marker.groups(self.selection, split_edges["marker"]))})
         drawn = []
-        for panel, panel_rows in split(self.selection, facet_by):
-            for color_label, color_rows in split(panel_rows, color_by):
-                for marker_label, part in split(color_rows, marker_by):
+        for panel, panel_rows in facet.groups(self.selection, split_edges["facet"]):
+            for color_label, color_rows in color.groups(panel_rows, split_edges["color"]):
+                parts = [("", color_rows)] if marker_off else marker.groups(color_rows, split_edges["marker"])
+                for marker_label, part in parts:
                     key = "; ".join(t for t in (color_label, marker_label) if t)
                     if kind == "histogram":
                         series = histogram(part.columns[x_name], edges, self.norm.currentData(), key)
@@ -739,7 +959,8 @@ class AnalysisPage(QWidget):
     def _look(self, d: Drawn) -> dict[str, Any]:
         """Вид кривой: по умолчанию (цвет — по значению «цвет по», маркер и линия — по значению «маркер по»)
         и поверх — правки из списка кривых."""
-        styled = self.marker_by.currentData() and self.marker_by.currentData() != self.color_by.currentData()
+        marker = self.split_rows["marker"]
+        styled = bool(marker.column_name()) and not marker.same_split(self.split_rows["color"])
         colors = self.colors or self._colors(1)
         look = {"visible": True, "color": to_hex(colors[d.color % len(colors)]),
                 "marker": MARKER_CYCLE[d.marker % len(MARKER_CYCLE)] if styled else "o",
@@ -757,13 +978,13 @@ class AnalysisPage(QWidget):
                 style[name] = value
         if not style:
             del self.styles[key]
-        self.timer.start()
+        self._changed(False)
 
     def reset_styles(self) -> None:
-        """«Сбросить вид кривых»: все кривые — как по умолчанию и показаны."""
+        """«Сбросить вид кривых»: все кривые — как по умолчанию и показаны (без пересчёта строк)."""
         self.styles.clear()
         self.curve_keys = []  # список кривых перестроится
-        self.replot()
+        self.redraw()
 
     def _pick_color(self, key: str) -> None:
         """Щелчок по цвету кривой: выбрать цвет (сначала — её нынешний)."""
@@ -925,42 +1146,85 @@ class AnalysisPage(QWidget):
         ax.set_axis_off()
 
     def replot(self) -> None:
-        """Пересчитать свои колонки, выборку и кривые по настройкам и нарисовать."""
-        kind = self.kind.currentData()
-        self.y_column.setEnabled(kind != "histogram")
-        self.statistic.setEnabled(kind == "binned")
-        self.norm.setEnabled(kind == "histogram")
-        for widget in (self.window_width, self.window_count, self.window_low, self.window_high):
-            widget.setEnabled(kind != "points")
+        """Пересчитать свои колонки, выборку и кривые по настройкам и нарисовать (кнопка «Перестроить график»)."""
+        self.timer.stop()
+        self.pending_compute = False
+        self.replot_hint.setVisible(False)
+        self._enable_for_kind()
         self._apply_columns()
-        self.figure.clear()
         self.drawn, self.visible, self.series, self.curves, self.fits = [], [], [], [], []
+        self._conditions, self._edges, self._x_name, self._y_name = [], None, None, None
+        self._split_text = {}
+        self._note = ""
         if not len(self.data):
             self.selection = DataTable()
             self.selection_info.setText("")
             self.summary.setText("Данные не загружены.")
-            self._message("Отметьте эксперименты слева и нажмите «Загрузить»")
-            return self._finish(False)
-        conditions = self._select()
+            self._note = "Отметьте эксперименты слева и нажмите «Загрузить»"
+            return self.redraw()
+        self._conditions = self._select()
         self.selection_info.setText(f"в выборке {_count(len(self.selection))} строк из {_count(len(self.data))}")
         x_name, y_name = self.x_column.currentData(), self.y_column.currentData()
+        self._x_name, self._y_name = x_name, y_name
         if not len(self.selection) or not x_name:
-            self.summary.setText(self._summary(kind, x_name, y_name, None, conditions, []))
-            self._message("В выборке нет строк — ослабьте условия")
-            return self._finish(False)
+            self.summary.setText(self._summary(self.kind.currentData(), x_name, y_name, None, self._conditions, []))
+            self._note = "В выборке нет строк — ослабьте условия"
+            return self.redraw()
         width, count = _number(self.window_width.text()), _number(self.window_count.text())
-        edges = window_edges(self.selection.columns[x_name], width=width if width and width > 0 else None,
-                             count=int(count) if count and count >= 1 else None,
-                             low=_number(self.window_low.text()), high=_number(self.window_high.text()))
-        self.drawn = self._split(kind, x_name, y_name, edges)
+        self._edges = window_edges(self.selection.columns[x_name],
+                                   width=width if width and width > 0 else None,
+                                   count=int(count) if count and count >= 1 else None,
+                                   low=_number(self.window_low.text()), high=_number(self.window_high.text()))
+        try:
+            split_edges = {key: row.edges(self.selection) for key, row in self.split_rows.items()}
+        except ValueError as error:
+            self.summary.setText(f"Разделение: {error}.")
+            self._note = f"Разделение: {error}"
+            return self.redraw()
+        self._split_text = {key: row.describe(self.selection, split_edges[key])
+                            for key, row in self.split_rows.items()}
+        kind = self.kind.currentData()
+        color, marker, facet = (self.split_rows[key] for key in ("color", "marker", "facet"))
+        marker_off = not marker.column_name() or marker.same_split(color)
+        panels_n = facet.series_count(self.selection, split_edges["facet"])
+        curves_n = (panels_n * color.series_count(self.selection, split_edges["color"]) *
+                    (1 if marker_off else marker.series_count(self.selection, split_edges["marker"])))
+        if panels_n > MAX_PANELS or curves_n > MAX_CURVES:  # проверить до построения тысяч групп
+            self.summary.setText(self._summary(kind, x_name, y_name, self._edges, self._conditions, []))
+            self._note = (f"Слишком много: графиков рядом было бы {panels_n}, кривых — до {curves_n} "
+                          f"(пределы {MAX_PANELS} и {MAX_CURVES}).\nВыберите в «5 Разделение» колонку с "
+                          f"меньшим числом значений или меньше интервалов")
+            return self.redraw()
+        self.drawn = self._split(kind, x_name, y_name, self._edges, split_edges)
         panels = list(dict.fromkeys(d.panel for d in self.drawn))
         too_many = (f"графиков рядом было бы {len(panels)} — больше {MAX_PANELS}" if len(panels) > MAX_PANELS else
                     f"кривых было бы {len(self.drawn)} — больше {MAX_CURVES}" if len(self.drawn) > MAX_CURVES else "")
         if too_many:
             self.drawn = []
-            self.summary.setText(self._summary(kind, x_name, y_name, edges, conditions, []))
-            self._message(f"Слишком много: {too_many}.\nВыберите в «5 Разделение» колонку с меньшим числом значений")
+            self.summary.setText(self._summary(kind, x_name, y_name, self._edges, self._conditions, []))
+            self._note = (f"Слишком много: {too_many}.\nВыберите в «5 Разделение» колонку с меньшим числом "
+                          f"значений или меньше интервалов")
+            return self.redraw()
+        if not self.drawn:
+            self.summary.setText(self._summary(kind, x_name, y_name, self._edges, self._conditions, []))
+            self._note = "Кривых нет — проверьте пределы интервалов и выборку"
+            return self.redraw()
+        self.redraw()
+
+    def redraw(self) -> None:
+        """Нарисовать заново уже посчитанные кривые (правки вида, осей, оформления, своей кривой и её
+        параметров) — строки не пересчитываются."""
+        self.view_timer.stop()
+        self.figure.clear()
+        self.curves, self.fits = [], []
+        if self._note:
+            self._message(self._note)
             return self._finish(False)
+        if not self.drawn:
+            self.summary.setText("Кривых нет — проверьте выборку и разделение.")
+            return self._finish(False)
+        kind = self.kind.currentData()
+        panels = list(dict.fromkeys(d.panel for d in self.drawn))
         self.colors = self._colors(1 + max((d.color for d in self.drawn), default=0))
         self.visible = [d for d in self.drawn if self._look(d)["visible"]]
         self.series = [d.series for d in self.visible]
@@ -974,11 +1238,50 @@ class AnalysisPage(QWidget):
             mine = [d for d in self.visible if d.panel == panel]
             self._draw(ax, kind, mine)
             fit_lines += self._curves(ax, mine)
-            self._decorate(ax, kind, x_name, y_name, panel, len(panels) > 1)
+            self._decorate(ax, kind, self._x_name, self._y_name, panel, len(panels) > 1)
         self.fit_info.setText("\n".join(fit_lines))
         self._legend(axes[:len(panels)])
-        self.summary.setText(self._summary(kind, x_name, y_name, edges, conditions, panels))
+        self.summary.setText(self._summary(kind, self._x_name, self._y_name, self._edges, self._conditions, panels))
         return self._finish(True)
+
+    def _changed(self, compute: bool) -> None:
+        """Правка настроек: расчётные — пересчитать (сразу, если «строить сразу», иначе по кнопке), правки
+        вида — только перерисовать; строки при правках вида не пересчитываются."""
+        if compute:
+            self.pending_compute = True
+            self._enable_for_kind()
+            if not self.auto_replot.isChecked():
+                self.replot_hint.setText("настройки изменились — нажмите «Перестроить график»")
+                self.replot_hint.setVisible(True)
+                return
+            self.timer.start()
+        else:
+            self.view_timer.start()
+
+    def _auto_replot(self) -> None:
+        """Сработала пауза после правки: пересчитать, если включено «строить сразу»."""
+        if self.auto_replot.isChecked():
+            self.replot()
+
+    def _auto_toggled(self, checked: bool) -> None:
+        """Флажок «строить сразу»: включили — пересчитать отложенное; выключили — напомнить о кнопке."""
+        if not self.pending_compute:
+            return
+        if checked:
+            self.timer.start()
+        else:
+            self.replot_hint.setText("настройки изменились — нажмите «Перестроить график»")
+            self.replot_hint.setVisible(True)
+
+    def _enable_for_kind(self) -> None:
+        """Доступность полей по виду графика: Y — не для гистограммы, статистика — для зависимости, окна —
+        не для точек."""
+        kind = self.kind.currentData()
+        self.y_column.setEnabled(kind != "histogram")
+        self.statistic.setEnabled(kind == "binned")
+        self.norm.setEnabled(kind == "histogram")
+        for widget in (self.window_width, self.window_count, self.window_low, self.window_high):
+            widget.setEnabled(kind != "points")
 
     def _draw(self, ax, kind: str, drawn: list[Drawn]) -> None:
         """Кривые drawn на оси ax — каждая своим видом."""
@@ -1060,10 +1363,9 @@ class AnalysisPage(QWidget):
         chosen = "; ".join(_describe(c) for c in conditions) or "все строки"
         selected = f"Выборка: {chosen} → {_count(len(self.selection))} из {_count(len(self.data))} строк."
         parts = []
-        for box, text in ((self.color_by, "цвет"), (self.marker_by, "маркер и линия"), (self.facet_by, "графики рядом")):
-            name = box.currentData()
-            if name and len(self.selection):
-                parts.append(f"{text} — {name} ({len(self.selection.unique(name))})")
+        for key, text in (("color", "цвет"), ("marker", "маркер и линия"), ("facet", "графики рядом")):
+            if self._split_text.get(key):
+                parts.append(f"{text} — {self._split_text[key]}")
         grouped = ("Разделение: " + ", ".join(parts) + ".") if parts else "Без разделения."
         hidden = len(self.drawn) - len(self.visible)
         shown = f"Кривых: {len(self.visible)}" + (f" (скрыто {hidden})" if hidden else "") + \
@@ -1155,10 +1457,12 @@ class AnalysisPage(QWidget):
         combos = {name: getattr(self, name).currentData() for name in
                   ("level", "kind", "x_column", "y_column", "color_by", "marker_by", "facet_by", "statistic", "norm",
                    "curve_mode", "legend", "palette")}
-        checks = {name: getattr(self, name).isChecked() for name in ("log_x", "log_y", "grid", "error_bars")}
+        checks = {name: getattr(self, name).isChecked() for name in
+                  ("log_x", "log_y", "grid", "error_bars", "auto_replot")}
         return {"sources": [s.label for s in self.checked_sources()], "columns": self.columns_text.toPlainText(),
                 "conditions": [row.state() for row in self.rows], "initial": self.initial_values(),
-                "edits": edits, "combos": combos, "checks": checks, "styles": self.styles}
+                "edits": edits, "combos": combos, "checks": checks, "styles": self.styles,
+                "splits": {key: row.state() for key, row in self.split_rows.items()}}
 
     def set_state(self, state: dict[str, Any]) -> None:
         """Восстановить настройки: источники (и загрузить данные), свои колонки, условия, график, вид кривых.
@@ -1183,6 +1487,9 @@ class AnalysisPage(QWidget):
             box = getattr(self, name, None)
             if isinstance(box, QComboBox):
                 box.setCurrentIndex(max(box.findData(key), 0))
+        for key, split in state.get("splits", {}).items():
+            if key in self.split_rows:
+                self.split_rows[key].set_state(split)
         for name, checked in state.get("checks", {}).items():
             if isinstance(getattr(self, name, None), QCheckBox):
                 getattr(self, name).setChecked(checked)
